@@ -439,13 +439,15 @@ func TestFileChangeDetectionAndAutoReload(t *testing.T) {
 		t.Fatalf("expected FileModified to be true after disk write")
 	}
 
-	// View should still show Version 1 and display the red "r reload" hint in the sidebar header
+	// View should still show Version 1 and display the red "r reload" hint at the right end of the footer bar
 	view := app.View()
+	viewLines := strings.Split(view, "\n")
+	footerLine := viewLines[len(viewLines)-1]
 	if !strings.Contains(view, "Version 1") {
 		t.Errorf("expected view not to auto-reload while AutoReload is off")
 	}
-	if !strings.Contains(view, fgReloadKey+"↻ r") || !strings.Contains(view, fgReloadDesc+"reload") {
-		t.Errorf("expected bright red 'r' and darker red 'reload' hint in header bar, got:\n%s", view)
+	if !strings.Contains(footerLine, fgReloadKey+"↻ r") || !strings.Contains(footerLine, fgReloadDesc+"reload") {
+		t.Errorf("expected bright red 'r' and darker red 'reload' hint in footer bar, got:\n%s", footerLine)
 	}
 
 	// Press 'r' to manually reload

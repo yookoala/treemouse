@@ -457,22 +457,10 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		if r.SidebarFocused {
 			sbHeaderTitle = " ▸ Headers"
 		}
-		reloadBadge := r.reloadHintBadge(bgSidebarHeader)
-		var sbHeader string
-		if reloadBadge != "" {
-			sbHeader = styleBarWithRight(sbHeaderTitle, reloadBadge, sw, bgSidebarHeader, fgSidebarTitle, fgReloadKey)
-		} else {
-			sbHeader = styleLine(sbHeaderTitle, sw, bgSidebarHeader, fgSidebarTitle)
-		}
+		sbHeader := styleLine(sbHeaderTitle, sw, bgSidebarHeader, fgSidebarTitle)
 		lines = append(lines, mainHeader+sbHeader)
 	} else {
-		// When sidebar is collapsed, show the reload hint at the right end of the top bar
-		reloadBadge := r.reloadHintBadge(bgBar)
-		rightSide := badges.String()
-		if reloadBadge != "" {
-			rightSide = reloadBadge + fgMuted + badges.String()
-		}
-		mainHeader := styleBarWithRight(" 📖 "+titlePath, rightSide, mainW, bgBar, fgActiveCursor, fgMuted)
+		mainHeader := styleBarWithRight(" 📖 "+titlePath, badges.String(), mainW, bgBar, fgActiveCursor, fgMuted)
 		lines = append(lines, mainHeader)
 	}
 
@@ -499,7 +487,8 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit — without colons)
+	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit — without colons,
+	// with the red "r reload" indicator at the right end of the footer bar when modified and AutoReload is off)
 	var footerText string
 	if r.SidebarFocused {
 		footerText = formatFooterHints(bgBar,
@@ -513,7 +502,12 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 	}
-	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
+	reloadBadge := r.reloadHintBadge(bgBar)
+	if reloadBadge != "" {
+		lines = append(lines, styleBarWithRight(footerText, reloadBadge, width, bgBar, fgMuted, fgReloadKey))
+	} else {
+		lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
+	}
 
 	return lines
 }
@@ -561,12 +555,7 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 
 	var lines []string
 	headerTitle := " Headers " + filepath.Base(r.FilePath)
-	reloadBadge := r.reloadHintBadge(bgSidebarHeader)
-	rightSide := "[Overlay] "
-	if reloadBadge != "" {
-		rightSide = reloadBadge
-	}
-	lines = append(lines, styleBarWithRight(headerTitle, rightSide, width, bgSidebarHeader, fgSidebarTitle, fgMuted))
+	lines = append(lines, styleBarWithRight(headerTitle, "[Overlay] ", width, bgSidebarHeader, fgSidebarTitle, fgMuted))
 
 	for row := 0; row < bodyHeight; row++ {
 		lines = append(lines, r.renderSidebarRow(row, width))
@@ -577,6 +566,11 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 		HintPair{Key: "/", Desc: "Commands"},
 		HintPair{Key: "Esc", Desc: "Quit"},
 	)
-	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
+	reloadBadge := r.reloadHintBadge(bgSidebarHeader)
+	if reloadBadge != "" {
+		lines = append(lines, styleBarWithRight(footer, reloadBadge, width, bgSidebarHeader, fgMuted, fgReloadKey))
+	} else {
+		lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
+	}
 	return lines
 }
