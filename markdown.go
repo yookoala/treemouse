@@ -1,0 +1,583 @@
+package main
+
+import (
+	"regexp"
+	"strings"
+	"unicode"
+
+	"github.com/mattn/go-runewidth"
+)
+
+// HeaderItem represents a parsed Markdown header and its rendered line position.
+type HeaderItem struct {
+	Level      int
+	Title      string // Raw title without leading '#'
+	Prefix     string // e.g., "#", "##", "###"
+	SourceLine int    // 0-based line in source file
+	RenderLine int    // 0-based line in wrapped rendered output
+}
+
+// RenderedDoc holds the wrapped ANSI lines and extracted headers for a given width.
+type RenderedDoc struct {
+	Lines   []string
+	Headers []HeaderItem
+}
+
+var (
+	reATXHeader   = regexp.MustCompile(`^(\s{0,3})(#{1,6})\s+(.*)$`)
+	reHR          = regexp.MustCompile(`^\s{0,3}((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})\s*$`)
+	reUL          = regexp.MustCompile(`^(\s*)[-*+]\s+(.*)$`)
+	reOL          = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
+	reBlockquote  = regexp.MustCompile(`^\s{0,3}>\s?(.*)$`)
+	reFencedBlock = regexp.MustCompile("^\\s{0,3}(```+|~~~+)(.*)$")
+)
+
+// styledToken represents a unit of text with its active ANSI formatting.
+type styledToken struct {
+	text  string
+	style string // ANSI sequences applied before text
+}
+
+// RenderMarkdown parses raw Markdown content and formats it into wrapped ANSI lines
+// fitted to the given width (including a 1-column left/right margin when width allows).
+func RenderMarkdown(source string, width int) RenderedDoc {
+	if width < 10 {
+		width = 10
+	}
+	contentWidth := width - 2 // 1 space left margin, 1 space right margin
+	if contentWidth < 4 {
+		contentWidth = width
+	}
+
+	rawLines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
+	var outLines []string
+	var headers []HeaderItem
+
+	inCodeBlock := false
+	fenceMarker := ""
+
+	for srcIdx, line := range rawLines {
+		// Check fenced code blocks
+		if m := reFencedBlock.FindStringSubmatch(line); m != nil {
+			marker := m[1][:3]
+			if !inCodeBlock {
+				inCodeBlock = true
+				fenceMarker = marker
+				lang := strings.TrimSpace(m[2])
+				label := "─── code "
+				if lang != "" {
+					label = "─── " + lang + " "
+				}
+				fill := contentWidth - visibleWidth(label)
+				if fill < 0 {
+					fill = 0
+				}
+				bar := fgQuoteBar + label + strings.Repeat("─", fill)
+				outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
+				continue
+			} else if strings.HasPrefix(m[1], fenceMarker) {
+				inCodeBlock = false
+				fenceMarker = ""
+				bar := fgQuoteBar + strings.Repeat("─", contentWidth)
+				outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
+				continue
+			}
+		}
+
+		if inCodeBlock {
+			expanded := strings.ReplaceAll(line, "\t", "    ")
+			wrapped := wrapPlainLine(expanded, contentWidth)
+			for _, wl := range wrapped {
+				outLines = append(outLines, styleLine(" "+fgCode+wl, width, bgCode, fgCode))
+			}
+			continue
+		}
+
+		// Empty line
+		if strings.TrimSpace(line) == "" {
+			outLines = append(outLines, styleLine("", width, bgMain, fgDefault))
+			continue
+		}
+
+		// Horizontal rule (check before unordered list since "* * *" or "---" matches HR)
+		if reHR.MatchString(line) && !reATXHeader.MatchString(line) {
+			hr := fgQuoteBar + strings.Repeat("─", contentWidth)
+			outLines = append(outLines, styleLine(" "+hr, width, bgMain, fgDefault))
+			continue
+		}
+
+		// ATX Header (# .. ######)
+		if m := reATXHeader.FindStringSubmatch(line); m != nil {
+			hashes := m[2]
+			level := len(hashes)
+			rawTitle := strings.TrimSpace(strings.TrimRight(m[3], "# "))
+			if rawTitle == "" {
+				rawTitle = strings.TrimSpace(m[3])
+			}
+			renderIdx := len(outLines)
+			headers = append(headers, HeaderItem{
+				Level:      level,
+				Title:      stripInlineMarkdown(rawTitle),
+				Prefix:     hashes,
+				SourceLine: srcIdx,
+				RenderLine: renderIdx,
+			})
+
+			hCol := headerColor(level)
+			fullHeaderText := hashes + " " + rawTitle
+			tokens := parseInlineTokens(fullHeaderText, bgMain, hCol)
+			wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, hCol)
+			for _, wl := range wrapped {
+				outLines = append(outLines, styleLine(" "+wl, width, bgMain, hCol))
+			}
+			continue
+		}
+
+		// Blockquote (> ...)
+		if m := reBlockquote.FindStringSubmatch(line); m != nil {
+			qText := m[1]
+			firstPrefix := fgQuoteBar + "│ " + ansiReset + bgMain + fgQuote + ansiItalic
+			contPrefix := fgQuoteBar + "│ " + ansiReset + bgMain + fgQuote + ansiItalic
+			baseFg := fgQuote + ansiItalic
+			tokens := parseInlineTokens(qText, bgMain, baseFg)
+			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, baseFg)
+			for _, wl := range wrapped {
+				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
+			}
+			continue
+		}
+
+		// Unordered List (- / * / +)
+		if m := reUL.FindStringSubmatch(line); m != nil {
+			indent := strings.ReplaceAll(m[1], "\t", "  ")
+			itemText := m[2]
+			firstPrefix := indent + fgH3 + "• " + ansiReset + bgMain + fgDefault
+			contPrefix := indent + "  "
+			tokens := parseInlineTokens(itemText, bgMain, fgDefault)
+			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
+			for _, wl := range wrapped {
+				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
+			}
+			continue
+		}
+
+		// Ordered List (1. / 1))
+		if m := reOL.FindStringSubmatch(line); m != nil {
+			indent := strings.ReplaceAll(m[1], "\t", "  ")
+			num := m[2]
+			itemText := m[3]
+			firstPrefix := indent + fgH3 + num + " " + ansiReset + bgMain + fgDefault
+			contPrefix := indent + strings.Repeat(" ", visibleWidth(num)+1)
+			tokens := parseInlineTokens(itemText, bgMain, fgDefault)
+			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
+			for _, wl := range wrapped {
+				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
+			}
+			continue
+		}
+
+		// Normal paragraph line
+		expanded := strings.ReplaceAll(line, "\t", "    ")
+		tokens := parseInlineTokens(expanded, bgMain, fgDefault)
+		wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, fgDefault)
+		for _, wl := range wrapped {
+			outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
+		}
+	}
+
+	if len(outLines) == 0 {
+		outLines = append(outLines, styleLine("", width, bgMain, fgDefault))
+	}
+
+	return RenderedDoc{
+		Lines:   outLines,
+		Headers: headers,
+	}
+}
+
+// parseInlineTokens parses inline Markdown constructs into styled spans:
+// - Links `[text](url "title")`: keeps full raw Markdown brackets, URL, and quotes + ANSI underline + link color
+// - Inline code `` `code` ``: code background + foreground
+// - Bold+Italic `***text***` or `___text___`: ANSI bold + italic
+// - Bold `**text**` or `__text__`: ANSI bold
+// - Italic `*text*` or `_text_`: ANSI italic
+// - Strikethrough `~~text~~`: ANSI strikethrough
+// - Underline `<u>text</u>`: ANSI underline
+func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
+	baseStyle := ansiReset + lineBg + baseFg
+	var spans []styledToken
+
+	i := 0
+	n := len(s)
+	var plain strings.Builder
+
+	flushPlain := func() {
+		if plain.Len() > 0 {
+			spans = append(spans, styledToken{
+				text:  plain.String(),
+				style: baseStyle,
+			})
+			plain.Reset()
+		}
+	}
+
+	for i < n {
+		// 1. Inline code: `...`
+		if s[i] == '`' {
+			end := strings.IndexByte(s[i+1:], '`')
+			if end >= 0 {
+				flushPlain()
+				codeContent := s[i : i+1+end+1] // keep backticks or content
+				spans = append(spans, styledToken{
+					text:  codeContent,
+					style: ansiReset + bgCode + fgCode,
+				})
+				i += end + 2
+				continue
+			}
+		}
+
+		// 2. Markdown link (or image link): `[label](url "title")` or `![alt](url)`
+		if s[i] == '[' || (s[i] == '!' && i+1 < n && s[i+1] == '[') {
+			if linkLen := matchMarkdownLink(s[i:]); linkLen > 0 {
+				flushPlain()
+				rawLink := s[i : i+linkLen]
+				// Keep full markdown brackets, quotes, and URL with ANSI underline
+				spans = append(spans, styledToken{
+					text:  rawLink,
+					style: baseStyle + fgLink + ansiUnderline,
+				})
+				i += linkLen
+				continue
+			}
+		}
+
+		// 3. HTML <u>...</u> underline tag
+		if strings.HasPrefix(strings.ToLower(s[i:]), "<u>") {
+			lowerRest := strings.ToLower(s[i+3:])
+			if end := strings.Index(lowerRest, "</u>"); end >= 0 {
+				flushPlain()
+				inner := s[i+3 : i+3+end]
+				spans = append(spans, styledToken{
+					text:  inner,
+					style: baseStyle + ansiUnderline,
+				})
+				i += 3 + end + 4
+				continue
+			}
+		}
+
+		// 4. Bold + Italic: ***...*** or ___...___
+		if strings.HasPrefix(s[i:], "***") || strings.HasPrefix(s[i:], "___") {
+			delim := s[i : i+3]
+			if end := strings.Index(s[i+3:], delim); end > 0 {
+				flushPlain()
+				inner := s[i+3 : i+3+end]
+				spans = append(spans, styledToken{
+					text:  inner,
+					style: baseStyle + ansiBold + ansiItalic,
+				})
+				i += 3 + end + 3
+				continue
+			}
+		}
+
+		// 5. Bold: **...** or __...__
+		if strings.HasPrefix(s[i:], "**") || strings.HasPrefix(s[i:], "__") {
+			delim := s[i : i+2]
+			if end := strings.Index(s[i+2:], delim); end > 0 {
+				flushPlain()
+				inner := s[i+2 : i+2+end]
+				spans = append(spans, styledToken{
+					text:  inner,
+					style: baseStyle + ansiBold,
+				})
+				i += 2 + end + 2
+				continue
+			}
+		}
+
+		// 6. Strikethrough: ~~...~~
+		if strings.HasPrefix(s[i:], "~~") {
+			if end := strings.Index(s[i+2:], "~~"); end > 0 {
+				flushPlain()
+				inner := s[i+2 : i+2+end]
+				spans = append(spans, styledToken{
+					text:  inner,
+					style: baseStyle + ansiStrike,
+				})
+				i += 2 + end + 2
+				continue
+			}
+		}
+
+		// 7. Italic: *...* or _..._
+		if s[i] == '*' || s[i] == '_' {
+			delim := s[i : i+1]
+			if end := strings.Index(s[i+1:], delim); end > 0 {
+				inner := s[i+1 : i+1+end]
+				if !strings.HasPrefix(inner, " ") && !strings.HasSuffix(inner, " ") {
+					flushPlain()
+					spans = append(spans, styledToken{
+						text:  inner,
+						style: baseStyle + ansiItalic,
+					})
+					i += 1 + end + 1
+					continue
+				}
+			}
+		}
+
+		plain.WriteByte(s[i])
+		i++
+	}
+	flushPlain()
+	return spans
+}
+
+// matchMarkdownLink matches `[text](dest)` or `![alt](dest)` at the start of s
+// and returns the byte length of the full link, or 0 if not a valid link.
+func matchMarkdownLink(s string) int {
+	pos := 0
+	if strings.HasPrefix(s, "![") {
+		pos = 2
+	} else if strings.HasPrefix(s, "[") {
+		pos = 1
+	} else {
+		return 0
+	}
+
+	bracketDepth := 1
+	for pos < len(s) && bracketDepth > 0 {
+		if s[pos] == '\\' && pos+1 < len(s) {
+			pos += 2
+			continue
+		}
+		if s[pos] == '[' {
+			bracketDepth++
+		} else if s[pos] == ']' {
+			bracketDepth--
+		}
+		pos++
+	}
+	if bracketDepth != 0 || pos >= len(s) || s[pos] != '(' {
+		return 0
+	}
+
+	pos++ // skip '('
+	parenDepth := 1
+	inQuotes := byte(0)
+	for pos < len(s) && parenDepth > 0 {
+		ch := s[pos]
+		if ch == '\\' && pos+1 < len(s) {
+			pos += 2
+			continue
+		}
+		if inQuotes != 0 {
+			if ch == inQuotes {
+				inQuotes = 0
+			}
+		} else {
+			if ch == '"' || ch == '\'' {
+				inQuotes = ch
+			} else if ch == '(' {
+				parenDepth++
+			} else if ch == ')' {
+				parenDepth--
+			}
+		}
+		pos++
+	}
+	if parenDepth != 0 {
+		return 0
+	}
+	return pos
+}
+
+// stripInlineMarkdown removes basic inline formatting markers for clean sidebar display.
+func stripInlineMarkdown(s string) string {
+	for _, marker := range []string{"***", "___", "**", "__", "~~", "`", "<u>", "</u>"} {
+		s = strings.ReplaceAll(s, marker, "")
+	}
+	return strings.TrimSpace(s)
+}
+
+// wrapUnit represents a breakable chunk of styled text (e.g. an ASCII word, space, or single CJK character).
+type wrapUnit struct {
+	text    string
+	style   string
+	width   int
+	isSpace bool
+}
+
+// splitIntoWrapUnits breaks styled tokens into word/CJK wrapping units so English words
+// wrap cleanly on spaces and CJK characters wrap cleanly at any character boundary.
+func splitIntoWrapUnits(tokens []styledToken) []wrapUnit {
+	var units []wrapUnit
+	for _, tok := range tokens {
+		var wordBuf strings.Builder
+		wordWidth := 0
+		flushWord := func() {
+			if wordBuf.Len() > 0 {
+				units = append(units, wrapUnit{
+					text:  wordBuf.String(),
+					style: tok.style,
+					width: wordWidth,
+				})
+				wordBuf.Reset()
+				wordWidth = 0
+			}
+		}
+
+		for _, r := range tok.text {
+			rw := runewidth.RuneWidth(r)
+			if r == ' ' {
+				flushWord()
+				units = append(units, wrapUnit{
+					text:    " ",
+					style:   tok.style,
+					width:   1,
+					isSpace: true,
+				})
+			} else if rw > 1 || isCJKPunct(r) {
+				// Wide CJK rune or full-width punctuation can break before/after
+				flushWord()
+				units = append(units, wrapUnit{
+					text:  string(r),
+					style: tok.style,
+					width: rw,
+				})
+			} else {
+				wordBuf.WriteRune(r)
+				wordWidth += rw
+			}
+		}
+		flushWord()
+	}
+	return units
+}
+
+func isCJKPunct(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+}
+
+// wrapStyledTokens wraps styled tokens into lines of at most maxWidth display columns.
+func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefix, lineBg, baseFg string) []string {
+	if maxWidth < 4 {
+		maxWidth = 4
+	}
+	units := splitIntoWrapUnits(tokens)
+	baseStyle := ansiReset + lineBg + baseFg
+
+	prefix := firstPrefix
+	prefixW := visibleWidth(prefix)
+	if prefixW >= maxWidth-2 {
+		prefix = ""
+		prefixW = 0
+	}
+
+	var lines []string
+	var curLine strings.Builder
+	curLine.WriteString(baseStyle)
+	curLine.WriteString(prefix)
+	curW := prefixW
+	hasContentOnLine := false
+	activeStyle := ""
+
+	writeStyled := func(style, text string) {
+		if style != activeStyle {
+			curLine.WriteString(style)
+			activeStyle = style
+		}
+		curLine.WriteString(text)
+	}
+
+	startNewLine := func() {
+		lines = append(lines, curLine.String()+baseStyle)
+		curLine.Reset()
+		p := contPrefix
+		pw := visibleWidth(p)
+		if pw >= maxWidth-2 {
+			p = ""
+			pw = 0
+		}
+		curLine.WriteString(baseStyle)
+		curLine.WriteString(p)
+		curW = pw
+		hasContentOnLine = false
+		activeStyle = ""
+	}
+
+	for _, u := range units {
+		// Skip leading spaces on wrapped continuation lines
+		if u.isSpace && !hasContentOnLine && len(lines) > 0 {
+			continue
+		}
+
+		if curW+u.width <= maxWidth {
+			writeStyled(u.style, u.text)
+			curW += u.width
+			if !u.isSpace {
+				hasContentOnLine = true
+			}
+			continue
+		}
+
+		// If the unit fits on a fresh line, wrap before writing it
+		contW := visibleWidth(contPrefix)
+		if contW >= maxWidth-2 {
+			contW = 0
+		}
+		if hasContentOnLine && contW+u.width <= maxWidth {
+			startNewLine()
+			if u.isSpace {
+				continue
+			}
+			writeStyled(u.style, u.text)
+			curW += u.width
+			hasContentOnLine = true
+			continue
+		}
+
+		// Otherwise the single token itself is wider than the line (e.g. a long URL); break rune-by-rune
+		for _, r := range u.text {
+			rw := runewidth.RuneWidth(r)
+			if curW+rw > maxWidth && curW > 0 {
+				startNewLine()
+			}
+			writeStyled(u.style, string(r))
+			curW += rw
+			hasContentOnLine = true
+		}
+	}
+
+	lines = append(lines, curLine.String()+baseStyle)
+	return lines
+}
+
+// wrapPlainLine wraps an unstyled line (such as a code block line) to maxWidth display columns.
+func wrapPlainLine(s string, maxWidth int) []string {
+	if maxWidth < 4 {
+		maxWidth = 4
+	}
+	if s == "" {
+		return []string{""}
+	}
+	var lines []string
+	var cur strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > maxWidth && w > 0 {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			w = 0
+		}
+		cur.WriteRune(r)
+		w += rw
+	}
+	if cur.Len() > 0 || len(lines) == 0 {
+		lines = append(lines, cur.String())
+	}
+	return lines
+}
