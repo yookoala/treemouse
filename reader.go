@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ResponsiveBreakpoint is the terminal width below which the sidebar auto-collapses
@@ -20,6 +21,10 @@ type ReaderState struct {
 	LastRenderW    int
 	LastShowSyntax bool
 	ShowSyntax     bool
+	AutoReload     bool
+	LastModTime    time.Time
+	LastSize       int64
+	FileModified   bool // True when the file on disk has changed since last load
 	Scroll         int
 	SidebarOpen    bool
 	SidebarFocused bool
@@ -29,8 +34,12 @@ type ReaderState struct {
 }
 
 // NewReaderState loads a Markdown file and initializes the ReaderState for the given screen dimensions.
-func NewReaderState(filePath string, baseDir string, width, height int, showSyntax bool) (*ReaderState, error) {
+func NewReaderState(filePath string, baseDir string, width, height int, showSyntax bool, autoReload ...bool) (*ReaderState, error) {
 	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(absPath)
 	if err != nil {
 		return nil, err
 	}
@@ -46,18 +55,68 @@ func NewReaderState(filePath string, baseDir string, width, height int, showSynt
 		}
 	}
 
+	autoRel := false
+	if len(autoReload) > 0 {
+		autoRel = autoReload[0]
+	}
+
 	isNarrow := width < ResponsiveBreakpoint
 	r := &ReaderState{
 		FilePath:       absPath,
 		DisplayPath:    disp,
 		RawContent:     string(data),
 		ShowSyntax:     showSyntax,
+		AutoReload:     autoRel,
+		LastModTime:    info.ModTime(),
+		LastSize:       info.Size(),
+		FileModified:   false,
 		SidebarOpen:    !isNarrow, // Auto-collapsed on mobile/narrow screens, open on desktop
 		SidebarFocused: false,
 		IsNarrow:       isNarrow,
 	}
 	r.Reflow(width, height)
 	return r, nil
+}
+
+// CheckFileChanged checks whether the opened file has been modified on disk.
+// Returns true if the file changed since the last load.
+func (r *ReaderState) CheckFileChanged() bool {
+	info, err := os.Stat(r.FilePath)
+	if err != nil {
+		return r.FileModified
+	}
+	if !info.ModTime().Equal(r.LastModTime) || info.Size() != r.LastSize {
+		data, err := os.ReadFile(r.FilePath)
+		if err == nil && string(data) != r.RawContent {
+			r.FileModified = true
+		} else {
+			// Metadata changed or touched, update baseline if content is identical
+			r.LastModTime = info.ModTime()
+			r.LastSize = info.Size()
+		}
+	}
+	return r.FileModified
+}
+
+// Reload re-reads the file from disk, updates modification metadata, and reflows the view
+// while preserving the current scroll position.
+func (r *ReaderState) Reload(width, height int) error {
+	info, err := os.Stat(r.FilePath)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(r.FilePath)
+	if err != nil {
+		return err
+	}
+	r.RawContent = string(data)
+	r.LastModTime = info.ModTime()
+	r.LastSize = info.Size()
+	r.FileModified = false
+	r.LastRenderW = 0 // Force re-render
+	r.Reflow(width, height)
+	r.syncHeaderCursorToScroll()
+	return nil
 }
 
 // SetShowSyntax updates whether Markdown syntax & HTML comments are displayed and reflows the document.
@@ -67,6 +126,14 @@ func (r *ReaderState) SetShowSyntax(show bool, width, height int) {
 	}
 	r.ShowSyntax = show
 	r.Reflow(width, height)
+}
+
+// SetAutoReload updates the auto-reload flag and immediately reloads if a pending change exists.
+func (r *ReaderState) SetAutoReload(auto bool, width, height int) {
+	r.AutoReload = auto
+	if r.AutoReload && r.FileModified {
+		_ = r.Reload(width, height)
+	}
 }
 
 // OnResize updates responsive state when the terminal dimensions change.
@@ -332,6 +399,15 @@ func (r *ReaderState) renderContextHeaderLine(h HeaderItem, width int) string {
 	return styleLine(text, width, bgContextBar, hCol)
 }
 
+// reloadHintBadge returns the formatted red "↻ r reload " indicator when the file has changed
+// on disk and auto-reload mode is off.
+func (r *ReaderState) reloadHintBadge(bg string) string {
+	if !r.FileModified || r.AutoReload {
+		return ""
+	}
+	return fgReloadKey + "↻ r" + ansiReset + bg + " " + fgReloadDesc + "reload "
+}
+
 // RenderLines produces the full-screen lines for the Reader View (including wide split sidebar or narrow full-screen overlay).
 func (r *ReaderState) RenderLines(width, height int) []string {
 	if width < 10 {
@@ -361,25 +437,42 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	if maxScroll > 0 {
 		pct = r.Scroll * 100 / maxScroll
 	}
-	syntaxBadge := ""
-	if r.ShowSyntax {
-		syntaxBadge = "[SYNTAX] "
+	var badges strings.Builder
+	if r.AutoReload {
+		badges.WriteString("Auto Reload ")
 	}
-	progressBadge := fmt.Sprintf("%s[%d%%] ", syntaxBadge, pct)
+	if r.ShowSyntax {
+		badges.WriteString("[SYNTAX] ")
+	}
+	badges.WriteString(fmt.Sprintf("[%d%%] ", pct))
+
 	titlePath := r.DisplayPath
 	if r.IsNarrow {
 		titlePath = filepath.Base(r.FilePath)
 	}
-	mainHeader := styleBarWithRight(" 📖 "+titlePath, progressBadge, mainW, bgBar, fgActiveCursor, fgMuted)
 
 	if sw > 0 {
+		mainHeader := styleBarWithRight(" 📖 "+titlePath, badges.String(), mainW, bgBar, fgActiveCursor, fgMuted)
 		sbHeaderTitle := " Headers"
 		if r.SidebarFocused {
-			sbHeaderTitle = " ▸ Headers [Focused]"
+			sbHeaderTitle = " ▸ Headers"
 		}
-		sbHeader := styleLine(sbHeaderTitle, sw, bgSidebarHeader, fgSidebarTitle)
+		reloadBadge := r.reloadHintBadge(bgSidebarHeader)
+		var sbHeader string
+		if reloadBadge != "" {
+			sbHeader = styleBarWithRight(sbHeaderTitle, reloadBadge, sw, bgSidebarHeader, fgSidebarTitle, fgReloadKey)
+		} else {
+			sbHeader = styleLine(sbHeaderTitle, sw, bgSidebarHeader, fgSidebarTitle)
+		}
 		lines = append(lines, mainHeader+sbHeader)
 	} else {
+		// When sidebar is collapsed, show the reload hint at the right end of the top bar
+		reloadBadge := r.reloadHintBadge(bgBar)
+		rightSide := badges.String()
+		if reloadBadge != "" {
+			rightSide = reloadBadge + fgMuted + badges.String()
+		}
+		mainHeader := styleBarWithRight(" 📖 "+titlePath, rightSide, mainW, bgBar, fgActiveCursor, fgMuted)
 		lines = append(lines, mainHeader)
 	}
 
@@ -467,8 +560,13 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 	r.ensureHeaderVisible(bodyHeight)
 
 	var lines []string
-	headerTitle := " Headers: " + filepath.Base(r.FilePath)
-	lines = append(lines, styleBarWithRight(headerTitle, "[Overlay] ", width, bgSidebarHeader, fgSidebarTitle, fgMuted))
+	headerTitle := " Headers " + filepath.Base(r.FilePath)
+	reloadBadge := r.reloadHintBadge(bgSidebarHeader)
+	rightSide := "[Overlay] "
+	if reloadBadge != "" {
+		rightSide = reloadBadge
+	}
+	lines = append(lines, styleBarWithRight(headerTitle, rightSide, width, bgSidebarHeader, fgSidebarTitle, fgMuted))
 
 	for row := 0; row < bodyHeight; row++ {
 		lines = append(lines, r.renderSidebarRow(row, width))

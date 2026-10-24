@@ -4,10 +4,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+type fileCheckTickMsg time.Time
+
+func watchFileTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return fileCheckTickMsg(t)
+	})
+}
 
 // AppMode represents the active view in the mode stack.
 type AppMode int
@@ -31,6 +40,7 @@ type AppModel struct {
 	Browser         *BrowserState
 	Reader          *ReaderState
 	ShowSyntax      bool // Whether Markdown syntax & HTML comments are displayed
+	AutoReload      bool // Whether modified files are automatically reloaded (default: false)
 	ShowCommandMenu bool // Whether the "/" Commands popup is open
 	CommandQuery    string
 	CommandCursor   int
@@ -110,7 +120,7 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 	}
 
 	if IsSupportedMarkdown(fileName) {
-		reader, err := NewReaderState(absTarget, absCwd, width, height, m.ShowSyntax)
+		reader, err := NewReaderState(absTarget, absCwd, width, height, m.ShowSyntax, m.AutoReload)
 		if err != nil {
 			return nil, err
 		}
@@ -125,12 +135,20 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 
 // Init implements tea.Model.
 func (m *AppModel) Init() tea.Cmd {
-	return nil
+	return watchFileTickCmd()
 }
 
 // Update implements tea.Model.
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case fileCheckTickMsg:
+		if m.Mode == ModeReader && m.Reader != nil {
+			if m.Reader.CheckFileChanged() && m.AutoReload {
+				_ = m.Reader.Reload(m.Width, m.Height)
+			}
+		}
+		return m, watchFileTickCmd()
+
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
@@ -148,10 +166,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// 1. If Quit Confirmation Popup is open over Base Mode:
-		// Only Y/y confirms quitting, and N/n cancels.
+		// Y/y or Enter confirms quitting, and N/n or Esc cancels.
 		if m.ShowQuitConfirm {
 			switch strings.ToLower(key) {
-			case "y":
+			case "y", "enter":
 				return m, tea.Quit
 			case "n", "esc":
 				m.ShowQuitConfirm = false
@@ -192,6 +210,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// 7. Global "a" shortcut toggles Auto-Reload mode
+		if key == "a" {
+			m.toggleAutoReload()
+			return m, nil
+		}
+
 		// 7. Dispatch according to current mode in stack
 		switch m.Mode {
 		case ModeReader:
@@ -210,6 +234,13 @@ func (m *AppModel) toggleSyntaxDisplay() {
 	}
 }
 
+func (m *AppModel) toggleAutoReload() {
+	m.AutoReload = !m.AutoReload
+	if m.Reader != nil {
+		m.Reader.SetAutoReload(m.AutoReload, m.Width, m.Height)
+	}
+}
+
 func (m *AppModel) openCommandMenu() {
 	m.ShowCommandMenu = true
 	m.CommandQuery = ""
@@ -223,6 +254,10 @@ func (m *AppModel) availableCommands() []CommandOption {
 	if m.ShowSyntax {
 		syntaxLabel = "Toggle Markdown Syntax & Comments (Currently: Shown)"
 	}
+	autoReloadLabel := "Toggle Auto-Reload on File Change (Currently: OFF)"
+	if m.AutoReload {
+		autoReloadLabel = "Toggle Auto-Reload on File Change (Currently: ON)"
+	}
 
 	var all []CommandOption
 	if m.Mode == ModeReader && m.Reader != nil {
@@ -233,6 +268,8 @@ func (m *AppModel) availableCommands() []CommandOption {
 			sidebarLabel = "Expand Header Sidebar"
 		}
 		all = []CommandOption{
+			{ID: "reload_file", Label: "Reload Current File from Disk", Shortcut: "[r]"},
+			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "toggle_sidebar", Label: sidebarLabel, Shortcut: "[t]"},
 			{ID: "focus_sidebar", Label: "Switch Focus: Reader / Header Sidebar", Shortcut: "[Tab]"},
@@ -250,6 +287,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "open_selected", Label: "Open Selected Item", Shortcut: "[Enter]"},
 			{ID: "toggle_filter", Label: filterLabel, Shortcut: "[f]"},
 			{ID: "parent_dir", Label: "Go to Parent Directory", Shortcut: "[Bksp]"},
+			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
 			{ID: "quit_app", Label: "Quit Application", Shortcut: "[Esc]"},
@@ -344,6 +382,12 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 	}
 
 	switch id {
+	case "reload_file":
+		if m.Reader != nil {
+			_ = m.Reader.Reload(m.Width, m.Height)
+		}
+	case "toggle_autoreload":
+		m.toggleAutoReload()
 	case "toggle_syntax":
 		m.toggleSyntaxDisplay()
 	case "toggle_filter":
@@ -427,7 +471,7 @@ func (m *AppModel) updateBrowser(key string) (tea.Model, tea.Cmd) {
 			m.Browser.StatusMsg = "Unsupported file type: " + entry.Name + " (only Markdown files can be opened)"
 			return m, nil
 		}
-		reader, err := NewReaderState(entry.Path, m.RootDir, m.Width, m.Height, m.ShowSyntax)
+		reader, err := NewReaderState(entry.Path, m.RootDir, m.Width, m.Height, m.ShowSyntax, m.AutoReload)
 		if err != nil {
 			m.Browser.StatusMsg = "Error opening file: " + err.Error()
 			return m, nil
@@ -447,6 +491,12 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 	bodyHeight := m.Height - 2
 	if bodyHeight < 1 {
 		bodyHeight = 1
+	}
+
+	// Manual reload shortcut in Reader View
+	if key == "r" {
+		_ = m.Reader.Reload(m.Width, m.Height)
+		return m, nil
 	}
 
 	// Quick sidebar expand/collapse key works in both mobile and desktop sizes
@@ -648,6 +698,8 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Toggle Markdown-Only Filter", "[f] "},
 		{" Reader View", ""},
 		{"   Scroll Line / Page", "[↑/↓ / PgUp/PgDn] "},
+		{"   Reload Modified File", "[r] "},
+		{"   Toggle Auto-Reload on Change", "[a] "},
 		{"   Toggle Markdown Syntax & Comments", "[m] "},
 		{"   Toggle Header Sidebar", "[t] "},
 		{"   Switch Focus (Reader / Sidebar)", "[Tab] "},

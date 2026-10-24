@@ -43,9 +43,11 @@ const (
 	fgActiveCursor    = "\x1b[1;36m"     // Active selected item color
 	fgFilterBadge     = "\x1b[38;5;221m" // Filter indicator in header
 	fgSidebarTitle    = "\x1b[1;35m"     // Sidebar header title
-	fgYes             = "\x1b[1;32m"     // Confirm Yes
-	fgNo              = "\x1b[1;31m"     // Confirm No
-	fgWarn            = "\x1b[38;5;214m" // Status warning in footer
+	fgYes             = "\x1b[1;32m"       // Confirm Yes
+	fgNo              = "\x1b[1;31m"       // Confirm No
+	fgReloadKey       = "\x1b[1;38;5;196m" // Bright red for 'r' reload key hint
+	fgReloadDesc      = "\x1b[38;5;124m"   // Darker red for 'reload' label
+	fgWarn            = "\x1b[38;5;214m"   // Status warning in footer
 
 	// Markdown Header Level Colors (all bold)
 	fgH1              = "\x1b[1;38;5;81m"  // Cyan

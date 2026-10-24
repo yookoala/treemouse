@@ -179,8 +179,22 @@ func TestModeStackAndQuitConfirmation(t *testing.T) {
 		t.Errorf("expected 'n' to cancel Quit Confirmation Popup without quitting")
 	}
 
-	// Press Esc again, then 'Y' -> confirms quit
+	// Press Esc again, then 'Esc' -> cancels quit popup
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.ShowQuitConfirm || cmd != nil {
+		t.Errorf("expected 'Esc' to cancel Quit Confirmation Popup without quitting")
+	}
+
+	// Press Esc again, then 'Enter' -> confirms quit
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Errorf("expected 'Enter' in Quit Confirmation Popup to return tea.Quit cmd")
+	}
+
+	// Re-open popup and press 'Y' -> confirms quit
+	app.ShowQuitConfirm = true
 	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}})
 	if cmd == nil {
 		t.Errorf("expected 'Y' in Quit Confirmation Popup to return tea.Quit cmd")
@@ -397,5 +411,65 @@ func TestContextualStickyHeaders(t *testing.T) {
 	}
 	if ctxBeta[0].Title != "Book One" || ctxBeta[1].Title != "Chapter Beta" {
 		t.Errorf("unexpected contextual hierarchy under Chapter Beta: %+v", ctxBeta)
+	}
+}
+
+func TestFileChangeDetectionAndAutoReload(t *testing.T) {
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "live.md")
+	_ = os.WriteFile(mdPath, []byte("# Version 1\n\nInitial text."), 0o644)
+
+	app, err := NewAppModel(mdPath)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+	app.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+	// Default auto-reload should be off
+	if app.AutoReload || app.Reader.AutoReload {
+		t.Fatalf("expected AutoReload to default to false")
+	}
+
+	// Modify file on disk
+	_ = os.WriteFile(mdPath, []byte("# Version 2\n\nUpdated text content."), 0o644)
+
+	// Trigger file check tick while AutoReload is off
+	app.Update(fileCheckTickMsg{})
+	if !app.Reader.FileModified {
+		t.Fatalf("expected FileModified to be true after disk write")
+	}
+
+	// View should still show Version 1 and display the red "r reload" hint in the sidebar header
+	view := app.View()
+	if !strings.Contains(view, "Version 1") {
+		t.Errorf("expected view not to auto-reload while AutoReload is off")
+	}
+	if !strings.Contains(view, fgReloadKey+"↻ r") || !strings.Contains(view, fgReloadDesc+"reload") {
+		t.Errorf("expected bright red 'r' and darker red 'reload' hint in header bar, got:\n%s", view)
+	}
+
+	// Press 'r' to manually reload
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if app.Reader.FileModified {
+		t.Errorf("expected FileModified to be cleared after manual reload")
+	}
+	viewAfterReload := app.View()
+	if !strings.Contains(viewAfterReload, "Version 2") {
+		t.Errorf("expected view to contain 'Version 2' after pressing 'r'")
+	}
+
+	// Toggle AutoReload ON with 'a', then modify file again
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if !app.AutoReload || !app.Reader.AutoReload {
+		t.Fatalf("expected 'a' to enable AutoReload")
+	}
+	_ = os.WriteFile(mdPath, []byte("# Version 3\n\nAuto reloaded text."), 0o644)
+	app.Update(fileCheckTickMsg{})
+
+	if app.Reader.FileModified {
+		t.Errorf("expected FileModified to be false after auto-reload")
+	}
+	if !strings.Contains(app.View(), "Version 3") || !strings.Contains(app.View(), "Auto Reload") {
+		t.Errorf("expected view to automatically update to 'Version 3' and show 'Auto Reload' when AutoReload is on")
 	}
 }
