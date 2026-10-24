@@ -161,7 +161,17 @@ func TestModeStackAndQuitConfirmation(t *testing.T) {
 		t.Errorf("expected Esc to close mobile sidebar overlay and stay in ModeReader")
 	}
 
-	// Press Esc in Reader view -> pops back to Base Mode (File Browser)
+	// Press Left arrow in Reader view -> pops back to Base Mode (File Browser)
+	app.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if app.Mode != ModeBrowser {
+		t.Errorf("expected Left arrow from Reader to return to ModeBrowser, got %v", app.Mode)
+	}
+
+	// Re-open the file with Right arrow, then press Esc in Reader view -> pops back to Base Mode (File Browser)
+	app.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if app.Mode != ModeReader {
+		t.Fatalf("expected Right arrow on selected file to open ModeReader")
+	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if app.Mode != ModeBrowser {
 		t.Errorf("expected Esc from Reader to return to ModeBrowser, got %v", app.Mode)

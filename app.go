@@ -578,7 +578,7 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 
 	// Main Reader navigation
 	switch key {
-	case "esc", "q":
+	case "esc", "q", "left":
 		// Pop from Reader View back to Base Mode (File Browser)
 		m.Mode = ModeBrowser
 		m.Reader = nil
