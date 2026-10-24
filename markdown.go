@@ -11,7 +11,8 @@ import (
 // HeaderItem represents a parsed Markdown header and its rendered line position.
 type HeaderItem struct {
 	Level      int
-	Title      string // Raw title without leading '#'
+	Title      string // Clean title without leading '#' or inline syntax
+	RawTitle   string // Raw title with inline syntax intact
 	Prefix     string // e.g., "#", "##", "###"
 	SourceLine int    // 0-based line in source file
 	RenderLine int    // 0-based line in wrapped rendered output
@@ -26,9 +27,9 @@ type RenderedDoc struct {
 var (
 	reATXHeader   = regexp.MustCompile(`^(\s{0,3})(#{1,6})\s+(.*)$`)
 	reHR          = regexp.MustCompile(`^\s{0,3}((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})\s*$`)
-	reUL          = regexp.MustCompile(`^(\s*)[-*+]\s+(.*)$`)
+	reUL          = regexp.MustCompile(`^(\s*)([-*+])\s+(.*)$`)
 	reOL          = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
-	reBlockquote  = regexp.MustCompile(`^\s{0,3}>\s?(.*)$`)
+	reBlockquote  = regexp.MustCompile(`^(\s{0,3}>)\s?(.*)$`)
 	reFencedBlock = regexp.MustCompile("^\\s{0,3}(```+|~~~+)(.*)$")
 )
 
@@ -40,7 +41,14 @@ type styledToken struct {
 
 // RenderMarkdown parses raw Markdown content and formats it into wrapped ANSI lines
 // fitted to the given width (including a 1-column left/right margin when width allows).
-func RenderMarkdown(source string, width int) RenderedDoc {
+// By default (showSyntax == false), Markdown syntax markers (#, **, *, etc.) and HTML
+// comments are hidden while links remain visible and underlined.
+func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
+	displaySyntax := false
+	if len(showSyntax) > 0 {
+		displaySyntax = showSyntax[0]
+	}
+
 	if width < 10 {
 		width = 10
 	}
@@ -55,32 +63,43 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 
 	inCodeBlock := false
 	fenceMarker := ""
+	inHTMLComment := false
 
 	for srcIdx, line := range rawLines {
-		// Check fenced code blocks
-		if m := reFencedBlock.FindStringSubmatch(line); m != nil {
-			marker := m[1][:3]
-			if !inCodeBlock {
-				inCodeBlock = true
-				fenceMarker = marker
-				lang := strings.TrimSpace(m[2])
-				label := "─── code "
-				if lang != "" {
-					label = "─── " + lang + " "
+		// 1. Check fenced code blocks first (comments inside code blocks are literal code)
+		if !inHTMLComment {
+			if m := reFencedBlock.FindStringSubmatch(line); m != nil {
+				marker := m[1][:3]
+				if !inCodeBlock {
+					inCodeBlock = true
+					fenceMarker = marker
+					if displaySyntax {
+						outLines = append(outLines, styleLine(" "+fgQuoteBar+line, width, bgCode, fgCode))
+					} else {
+						lang := strings.TrimSpace(m[2])
+						label := "─── code "
+						if lang != "" {
+							label = "─── " + lang + " "
+						}
+						fill := contentWidth - visibleWidth(label)
+						if fill < 0 {
+							fill = 0
+						}
+						bar := fgQuoteBar + label + strings.Repeat("─", fill)
+						outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
+					}
+					continue
+				} else if strings.HasPrefix(m[1], fenceMarker) {
+					inCodeBlock = false
+					fenceMarker = ""
+					if displaySyntax {
+						outLines = append(outLines, styleLine(" "+fgQuoteBar+line, width, bgCode, fgCode))
+					} else {
+						bar := fgQuoteBar + strings.Repeat("─", contentWidth)
+						outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
+					}
+					continue
 				}
-				fill := contentWidth - visibleWidth(label)
-				if fill < 0 {
-					fill = 0
-				}
-				bar := fgQuoteBar + label + strings.Repeat("─", fill)
-				outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
-				continue
-			} else if strings.HasPrefix(m[1], fenceMarker) {
-				inCodeBlock = false
-				fenceMarker = ""
-				bar := fgQuoteBar + strings.Repeat("─", contentWidth)
-				outLines = append(outLines, styleLine(" "+bar, width, bgCode, fgCode))
-				continue
 			}
 		}
 
@@ -93,6 +112,45 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 			continue
 		}
 
+		// 2. Process HTML comments (<!-- ... -->)
+		if !displaySyntax {
+			var skipWholeLine bool
+			line, inHTMLComment, skipWholeLine = stripHTMLCommentsFromLine(line, inHTMLComment)
+			if skipWholeLine {
+				continue
+			}
+		} else {
+			// When displaying syntax, render full HTML comment lines in dimmed style
+			trimmed := strings.TrimSpace(line)
+			if inHTMLComment {
+				if strings.Contains(line, "-->") {
+					inHTMLComment = false
+				}
+				wrapped := wrapPlainLine(strings.ReplaceAll(line, "\t", "    "), contentWidth)
+				for _, wl := range wrapped {
+					outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
+				}
+				continue
+			}
+			if strings.HasPrefix(trimmed, "<!--") {
+				if !strings.Contains(trimmed, "-->") {
+					inHTMLComment = true
+					wrapped := wrapPlainLine(strings.ReplaceAll(line, "\t", "    "), contentWidth)
+					for _, wl := range wrapped {
+						outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
+					}
+					continue
+				}
+				if strings.HasSuffix(trimmed, "-->") {
+					wrapped := wrapPlainLine(strings.ReplaceAll(line, "\t", "    "), contentWidth)
+					for _, wl := range wrapped {
+						outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
+					}
+					continue
+				}
+			}
+		}
+
 		// Empty line
 		if strings.TrimSpace(line) == "" {
 			outLines = append(outLines, styleLine("", width, bgMain, fgDefault))
@@ -101,8 +159,12 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 
 		// Horizontal rule (check before unordered list since "* * *" or "---" matches HR)
 		if reHR.MatchString(line) && !reATXHeader.MatchString(line) {
-			hr := fgQuoteBar + strings.Repeat("─", contentWidth)
-			outLines = append(outLines, styleLine(" "+hr, width, bgMain, fgDefault))
+			if displaySyntax {
+				outLines = append(outLines, styleLine(" "+fgQuoteBar+line, width, bgMain, fgDefault))
+			} else {
+				hr := fgQuoteBar + strings.Repeat("─", contentWidth)
+				outLines = append(outLines, styleLine(" "+hr, width, bgMain, fgDefault))
+			}
 			continue
 		}
 
@@ -118,14 +180,18 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 			headers = append(headers, HeaderItem{
 				Level:      level,
 				Title:      stripInlineMarkdown(rawTitle),
+				RawTitle:   rawTitle,
 				Prefix:     hashes,
 				SourceLine: srcIdx,
 				RenderLine: renderIdx,
 			})
 
 			hCol := headerColor(level)
-			fullHeaderText := hashes + " " + rawTitle
-			tokens := parseInlineTokens(fullHeaderText, bgMain, hCol)
+			headerText := rawTitle
+			if displaySyntax {
+				headerText = hashes + " " + rawTitle
+			}
+			tokens := parseInlineTokens(headerText, bgMain, hCol, displaySyntax)
 			wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, hCol)
 			for _, wl := range wrapped {
 				outLines = append(outLines, styleLine(" "+wl, width, bgMain, hCol))
@@ -135,11 +201,16 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 
 		// Blockquote (> ...)
 		if m := reBlockquote.FindStringSubmatch(line); m != nil {
-			qText := m[1]
-			firstPrefix := fgQuoteBar + "│ " + ansiReset + bgMain + fgQuote + ansiItalic
-			contPrefix := fgQuoteBar + "│ " + ansiReset + bgMain + fgQuote + ansiItalic
+			qMarker := m[1]
+			qText := m[2]
+			markerStr := "│ "
+			if displaySyntax {
+				markerStr = strings.TrimSpace(qMarker) + " "
+			}
+			firstPrefix := fgQuoteBar + markerStr + ansiReset + bgMain + fgQuote + ansiItalic
+			contPrefix := fgQuoteBar + markerStr + ansiReset + bgMain + fgQuote + ansiItalic
 			baseFg := fgQuote + ansiItalic
-			tokens := parseInlineTokens(qText, bgMain, baseFg)
+			tokens := parseInlineTokens(qText, bgMain, baseFg, displaySyntax)
 			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, baseFg)
 			for _, wl := range wrapped {
 				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
@@ -150,10 +221,15 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 		// Unordered List (- / * / +)
 		if m := reUL.FindStringSubmatch(line); m != nil {
 			indent := strings.ReplaceAll(m[1], "\t", "  ")
-			itemText := m[2]
-			firstPrefix := indent + fgH3 + "• " + ansiReset + bgMain + fgDefault
+			bullet := m[2]
+			itemText := m[3]
+			bulletDisplay := "• "
+			if displaySyntax {
+				bulletDisplay = bullet + " "
+			}
+			firstPrefix := indent + fgH3 + bulletDisplay + ansiReset + bgMain + fgDefault
 			contPrefix := indent + "  "
-			tokens := parseInlineTokens(itemText, bgMain, fgDefault)
+			tokens := parseInlineTokens(itemText, bgMain, fgDefault, displaySyntax)
 			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
 			for _, wl := range wrapped {
 				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
@@ -168,7 +244,7 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 			itemText := m[3]
 			firstPrefix := indent + fgH3 + num + " " + ansiReset + bgMain + fgDefault
 			contPrefix := indent + strings.Repeat(" ", visibleWidth(num)+1)
-			tokens := parseInlineTokens(itemText, bgMain, fgDefault)
+			tokens := parseInlineTokens(itemText, bgMain, fgDefault, displaySyntax)
 			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
 			for _, wl := range wrapped {
 				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
@@ -178,7 +254,7 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 
 		// Normal paragraph line
 		expanded := strings.ReplaceAll(line, "\t", "    ")
-		tokens := parseInlineTokens(expanded, bgMain, fgDefault)
+		tokens := parseInlineTokens(expanded, bgMain, fgDefault, displaySyntax)
 		wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, fgDefault)
 		for _, wl := range wrapped {
 			outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
@@ -195,15 +271,55 @@ func RenderMarkdown(source string, width int) RenderedDoc {
 	}
 }
 
+// stripHTMLCommentsFromLine removes `<!-- ... -->` blocks when showSyntax is false.
+// If the line was non-empty and becomes completely empty after stripping comments,
+// skipWholeLine is returned as true so comment-only lines leave no blank gap.
+func stripHTMLCommentsFromLine(line string, inComment bool) (string, bool, bool) {
+	hadComment := inComment || strings.Contains(line, "<!--")
+	if !hadComment {
+		return line, false, false
+	}
+
+	var out strings.Builder
+	s := line
+	for len(s) > 0 {
+		if inComment {
+			end := strings.Index(s, "-->")
+			if end < 0 {
+				s = ""
+				break
+			}
+			inComment = false
+			s = s[end+3:]
+		} else {
+			start := strings.Index(s, "<!--")
+			if start < 0 {
+				out.WriteString(s)
+				break
+			}
+			out.WriteString(s[:start])
+			inComment = true
+			s = s[start+4:]
+		}
+	}
+
+	res := out.String()
+	if strings.TrimSpace(res) == "" && strings.TrimSpace(line) != "" {
+		return "", inComment, true
+	}
+	return res, inComment, false
+}
+
 // parseInlineTokens parses inline Markdown constructs into styled spans:
-// - Links `[text](url "title")`: keeps full raw Markdown brackets, URL, and quotes + ANSI underline + link color
-// - Inline code `` `code` ``: code background + foreground
+// - Links `[text](url "title")`: always keeps full raw Markdown brackets, URL, and quotes + ANSI underline + link color
+// - Inline code `` `code` ``: code background + foreground (hides backticks unless showSyntax is true)
 // - Bold+Italic `***text***` or `___text___`: ANSI bold + italic
 // - Bold `**text**` or `__text__`: ANSI bold
 // - Italic `*text*` or `_text_`: ANSI italic
 // - Strikethrough `~~text~~`: ANSI strikethrough
 // - Underline `<u>text</u>`: ANSI underline
-func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
+// - Inline HTML comments `<!-- ... -->`: rendered dimmed when showSyntax is true
+func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []styledToken {
 	baseStyle := ansiReset + lineBg + baseFg
 	var spans []styledToken
 
@@ -222,12 +338,31 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 	}
 
 	for i < n {
+		// 0. Inline HTML comment when showSyntax is true
+		if showSyntax && strings.HasPrefix(s[i:], "<!--") {
+			if end := strings.Index(s[i+4:], "-->"); end >= 0 {
+				flushPlain()
+				commentText := s[i : i+4+end+3]
+				spans = append(spans, styledToken{
+					text:  commentText,
+					style: ansiReset + lineBg + fgUnsupported,
+				})
+				i += 4 + end + 3
+				continue
+			}
+		}
+
 		// 1. Inline code: `...`
 		if s[i] == '`' {
 			end := strings.IndexByte(s[i+1:], '`')
 			if end >= 0 {
 				flushPlain()
-				codeContent := s[i : i+1+end+1] // keep backticks or content
+				var codeContent string
+				if showSyntax {
+					codeContent = s[i : i+1+end+1]
+				} else {
+					codeContent = s[i+1 : i+1+end]
+				}
 				spans = append(spans, styledToken{
 					text:  codeContent,
 					style: ansiReset + bgCode + fgCode,
@@ -242,7 +377,7 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 			if linkLen := matchMarkdownLink(s[i:]); linkLen > 0 {
 				flushPlain()
 				rawLink := s[i : i+linkLen]
-				// Keep full markdown brackets, quotes, and URL with ANSI underline
+				// Always keep full markdown brackets, quotes, and URL with ANSI underline
 				spans = append(spans, styledToken{
 					text:  rawLink,
 					style: baseStyle + fgLink + ansiUnderline,
@@ -257,7 +392,12 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 			lowerRest := strings.ToLower(s[i+3:])
 			if end := strings.Index(lowerRest, "</u>"); end >= 0 {
 				flushPlain()
-				inner := s[i+3 : i+3+end]
+				var inner string
+				if showSyntax {
+					inner = s[i : i+3+end+4]
+				} else {
+					inner = s[i+3 : i+3+end]
+				}
 				spans = append(spans, styledToken{
 					text:  inner,
 					style: baseStyle + ansiUnderline,
@@ -272,7 +412,12 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 			delim := s[i : i+3]
 			if end := strings.Index(s[i+3:], delim); end > 0 {
 				flushPlain()
-				inner := s[i+3 : i+3+end]
+				var inner string
+				if showSyntax {
+					inner = s[i : i+3+end+3]
+				} else {
+					inner = s[i+3 : i+3+end]
+				}
 				spans = append(spans, styledToken{
 					text:  inner,
 					style: baseStyle + ansiBold + ansiItalic,
@@ -287,7 +432,12 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 			delim := s[i : i+2]
 			if end := strings.Index(s[i+2:], delim); end > 0 {
 				flushPlain()
-				inner := s[i+2 : i+2+end]
+				var inner string
+				if showSyntax {
+					inner = s[i : i+2+end+2]
+				} else {
+					inner = s[i+2 : i+2+end]
+				}
 				spans = append(spans, styledToken{
 					text:  inner,
 					style: baseStyle + ansiBold,
@@ -301,7 +451,12 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 		if strings.HasPrefix(s[i:], "~~") {
 			if end := strings.Index(s[i+2:], "~~"); end > 0 {
 				flushPlain()
-				inner := s[i+2 : i+2+end]
+				var inner string
+				if showSyntax {
+					inner = s[i : i+2+end+2]
+				} else {
+					inner = s[i+2 : i+2+end]
+				}
 				spans = append(spans, styledToken{
 					text:  inner,
 					style: baseStyle + ansiStrike,
@@ -315,11 +470,17 @@ func parseInlineTokens(s string, lineBg, baseFg string) []styledToken {
 		if s[i] == '*' || s[i] == '_' {
 			delim := s[i : i+1]
 			if end := strings.Index(s[i+1:], delim); end > 0 {
-				inner := s[i+1 : i+1+end]
-				if !strings.HasPrefix(inner, " ") && !strings.HasSuffix(inner, " ") {
+				rawInner := s[i+1 : i+1+end]
+				if !strings.HasPrefix(rawInner, " ") && !strings.HasSuffix(rawInner, " ") {
 					flushPlain()
+					var text string
+					if showSyntax {
+						text = s[i : i+1+end+1]
+					} else {
+						text = rawInner
+					}
 					spans = append(spans, styledToken{
-						text:  inner,
+						text:  text,
 						style: baseStyle + ansiItalic,
 					})
 					i += 1 + end + 1
@@ -396,7 +557,8 @@ func matchMarkdownLink(s string) int {
 
 // stripInlineMarkdown removes basic inline formatting markers for clean sidebar display.
 func stripInlineMarkdown(s string) string {
-	for _, marker := range []string{"***", "___", "**", "__", "~~", "`", "<u>", "</u>"} {
+	s, _, _ = stripHTMLCommentsFromLine(s, false)
+	for _, marker := range []string{"***", "___", "**", "__", "~~", "`", "<u>", "</u>", "*", "_"} {
 		s = strings.ReplaceAll(s, marker, "")
 	}
 	return strings.TrimSpace(s)

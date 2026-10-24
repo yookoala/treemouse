@@ -251,3 +251,91 @@ func TestNaturalSortingOrder(t *testing.T) {
 		t.Errorf("files natural sort = %v, want %v", gotFiles, wantFiles)
 	}
 }
+
+func TestMarkdownSyntaxAndHTMLCommentsToggle(t *testing.T) {
+	src := strings.Join([]string{
+		"<!-- Top secret comment -->",
+		"# Heading One",
+		"<!--",
+		"Multi-line hidden note",
+		"-->",
+		"Text with **bold** and `code` and <!-- inline note --> [Link](https://example.com).",
+	}, "\n")
+
+	// Default (showSyntax = false): syntax markers and HTML comments are hidden, link URL stays
+	hiddenDoc := RenderMarkdown(src, 80, false)
+	hiddenOut := strings.Join(hiddenDoc.Lines, "\n")
+
+	if strings.Contains(hiddenOut, "Top secret comment") ||
+		strings.Contains(hiddenOut, "Multi-line hidden note") ||
+		strings.Contains(hiddenOut, "inline note") {
+		t.Errorf("expected HTML comments to be hidden by default, got:\n%s", hiddenOut)
+	}
+	if strings.Contains(hiddenOut, "# Heading") {
+		t.Errorf("expected '#' prefix to be hidden by default, got:\n%s", hiddenOut)
+	}
+	if strings.Contains(hiddenOut, "**bold**") || strings.Contains(hiddenOut, "`code`") {
+		t.Errorf("expected inline '**' and '`' syntax markers to be hidden by default")
+	}
+	if !strings.Contains(hiddenOut, "[Link](https://example.com)") {
+		t.Errorf("expected link URL and brackets to remain visible by default")
+	}
+
+	// Toggled on (showSyntax = true): syntax markers and HTML comments are displayed
+	shownDoc := RenderMarkdown(src, 80, true)
+	shownOut := strings.Join(shownDoc.Lines, "\n")
+
+	if !strings.Contains(shownOut, "<!-- Top secret comment -->") ||
+		!strings.Contains(shownOut, "Multi-line hidden note") ||
+		!strings.Contains(shownOut, "<!-- inline note -->") {
+		t.Errorf("expected HTML comments to be visible when showSyntax=true, got:\n%s", shownOut)
+	}
+	if !strings.Contains(shownOut, "#") || !strings.Contains(shownOut, "**bold**") || !strings.Contains(shownOut, "`code`") {
+		t.Errorf("expected Markdown syntax markers (#, **, `) to be visible when showSyntax=true, got:\n%s", shownOut)
+	}
+}
+
+func TestCommandPalettePopupAndFooterHints(t *testing.T) {
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "doc.md")
+	_ = os.WriteFile(mdPath, []byte("# Title\n<!-- comment -->\nHello **world**"), 0o644)
+
+	app, err := NewAppModel(mdPath)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Check minimal footer in Reader view
+	view := app.View()
+	if !strings.Contains(view, "/: Commands") || !strings.Contains(view, "Esc: Quit") {
+		t.Errorf("expected minimal footer with '/: Commands' and 'Esc: Quit', got:\n%s", view)
+	}
+	if strings.Contains(view, "PgUp/PgDn") || strings.Contains(view, "Toggle Sidebar") {
+		t.Errorf("expected secondary features to be hidden from bottom footer")
+	}
+
+	// Open Commands popup with "/"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !app.ShowCommandMenu {
+		t.Fatalf("expected '/' to open Command Menu popup")
+	}
+
+	// Filter commands by typing "syntax"
+	for _, r := range "syntax" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	cmds := app.availableCommands()
+	if len(cmds) != 1 || cmds[0].ID != "toggle_syntax" {
+		t.Fatalf("expected filtering 'syntax' to match toggle_syntax, got %+v", cmds)
+	}
+
+	// Press Enter to execute the command -> toggles ShowSyntax on and closes Command Menu
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.ShowCommandMenu {
+		t.Errorf("expected Enter to close Command Menu after executing option")
+	}
+	if !app.ShowSyntax || !app.Reader.ShowSyntax {
+		t.Errorf("expected toggle_syntax command to enable ShowSyntax")
+	}
+}

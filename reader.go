@@ -18,6 +18,8 @@ type ReaderState struct {
 	RawContent     string
 	Rendered       RenderedDoc
 	LastRenderW    int
+	LastShowSyntax bool
+	ShowSyntax     bool
 	Scroll         int
 	SidebarOpen    bool
 	SidebarFocused bool
@@ -27,7 +29,7 @@ type ReaderState struct {
 }
 
 // NewReaderState loads a Markdown file and initializes the ReaderState for the given screen dimensions.
-func NewReaderState(filePath string, baseDir string, width, height int) (*ReaderState, error) {
+func NewReaderState(filePath string, baseDir string, width, height int, showSyntax bool) (*ReaderState, error) {
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		return nil, err
@@ -49,12 +51,22 @@ func NewReaderState(filePath string, baseDir string, width, height int) (*Reader
 		FilePath:       absPath,
 		DisplayPath:    disp,
 		RawContent:     string(data),
+		ShowSyntax:     showSyntax,
 		SidebarOpen:    !isNarrow, // Auto-collapsed on mobile/narrow screens, open on desktop
 		SidebarFocused: false,
 		IsNarrow:       isNarrow,
 	}
 	r.Reflow(width, height)
 	return r, nil
+}
+
+// SetShowSyntax updates whether Markdown syntax & HTML comments are displayed and reflows the document.
+func (r *ReaderState) SetShowSyntax(show bool, width, height int) {
+	if r.ShowSyntax == show {
+		return
+	}
+	r.ShowSyntax = show
+	r.Reflow(width, height)
 }
 
 // OnResize updates responsive state when the terminal dimensions change.
@@ -128,7 +140,7 @@ func (r *ReaderState) sidebarWidth(totalWidth int) int {
 	return sw
 }
 
-// Reflow re-renders the Markdown text if the available reader pane width has changed.
+// Reflow re-renders the Markdown text if the available reader pane width or syntax toggle has changed.
 func (r *ReaderState) Reflow(totalWidth, totalHeight int) {
 	if totalWidth < 10 {
 		totalWidth = 10
@@ -139,14 +151,15 @@ func (r *ReaderState) Reflow(totalWidth, totalHeight int) {
 		mainWidth = 10
 	}
 
-	if r.LastRenderW != mainWidth || len(r.Rendered.Lines) == 0 {
+	if r.LastRenderW != mainWidth || r.LastShowSyntax != r.ShowSyntax || len(r.Rendered.Lines) == 0 {
 		// Preserve approximate reading progress across reflows
 		var ratio float64
 		if len(r.Rendered.Lines) > 1 {
 			ratio = float64(r.Scroll) / float64(len(r.Rendered.Lines)-1)
 		}
-		r.Rendered = RenderMarkdown(r.RawContent, mainWidth)
+		r.Rendered = RenderMarkdown(r.RawContent, mainWidth, r.ShowSyntax)
 		r.LastRenderW = mainWidth
+		r.LastShowSyntax = r.ShowSyntax
 		if len(r.Rendered.Lines) > 1 {
 			r.Scroll = int(ratio * float64(len(r.Rendered.Lines)-1))
 		}
@@ -295,7 +308,11 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	if maxScroll > 0 {
 		pct = r.Scroll * 100 / maxScroll
 	}
-	progressBadge := fmt.Sprintf("[%d%%] ", pct)
+	syntaxBadge := ""
+	if r.ShowSyntax {
+		syntaxBadge = "[SYNTAX] "
+	}
+	progressBadge := fmt.Sprintf("%s[%d%%] ", syntaxBadge, pct)
 	titlePath := r.DisplayPath
 	if r.IsNarrow {
 		titlePath = filepath.Base(r.FilePath)
@@ -303,7 +320,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	mainHeader := styleBarWithRight(" 📖 "+titlePath, progressBadge, mainW, bgBar, fgActiveCursor, fgMuted)
 
 	if sw > 0 {
-		sbHeaderTitle := " Headers (t)"
+		sbHeaderTitle := " Headers"
 		if r.SidebarFocused {
 			sbHeaderTitle = " ▸ Headers [Focused]"
 		}
@@ -331,14 +348,12 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar
+	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit)
 	var footerText string
 	if r.SidebarFocused {
-		footerText = " ↑/↓/j/k: Select Header   Enter: Jump   Tab/Esc: Back to Reader   t: Hide Sidebar"
-	} else if r.IsNarrow {
-		footerText = " ↑/↓:Scroll  t:Headers  Esc:Back"
+		footerText = " Enter: Open   /: Commands   Esc: Quit"
 	} else {
-		footerText = " ↑/↓/j/k: Scroll   PgUp/PgDn: Page   t: Toggle Sidebar   Tab: Focus Sidebar   Esc: Back"
+		footerText = " /: Commands   Esc: Quit"
 	}
 	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
 
@@ -373,7 +388,12 @@ func (r *ReaderState) renderSidebarRow(row int, sw int) string {
 
 	indent := strings.Repeat("  ", h.Level-1)
 	hCol := headerColor(h.Level)
-	text := " " + cursor + indent + hCol + h.Prefix + " " + h.Title
+	var text string
+	if r.ShowSyntax {
+		text = " " + cursor + indent + hCol + h.Prefix + " " + h.RawTitle
+	} else {
+		text = " " + cursor + indent + hCol + h.Title
+	}
 	return styleLine(text, sw, rowBg, fgDefault)
 }
 
@@ -389,7 +409,7 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 		lines = append(lines, r.renderSidebarRow(row, width))
 	}
 
-	footer := " ↑/↓:Select  Enter:Jump  t/Esc:Close"
+	footer := " Enter: Open   /: Commands   Esc: Quit"
 	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
 	return lines
 }

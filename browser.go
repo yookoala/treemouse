@@ -333,9 +333,9 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 	var lines []string
 
 	// 1. Top Header Bar
-	filterLabel := "[Filter: ALL (f)] "
+	filterLabel := "[ALL] "
 	if b.FilterMD {
-		filterLabel = "[Filter: MD ONLY (f)] "
+		filterLabel = "[MD ONLY] "
 	}
 	headerLeft := " 📁 " + b.Dir
 	lines = append(lines, styleBarWithRight(headerLeft, filterLabel, width, bgBar, fgBright+ansiBold, fgFilterBadge))
@@ -388,14 +388,12 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 		lines = append(lines, styleLine(itemText, width, rowBg, fgDefault))
 	}
 
-	// 3. Bottom Footer Bar
+	// 3. Bottom Footer Bar (only essential features: Open, Commands, Quit)
 	var footerText string
 	if b.StatusMsg != "" {
 		footerText = " " + fgWarn + b.StatusMsg
-	} else if width < 80 {
-		footerText = " ↑/↓:Move  Enter:Open  Bksp:Up  f:Filter  Esc:Quit"
 	} else {
-		footerText = " ↑/↓/j/k: Move   Enter/l: Open   Backspace/h: Up   f: Filter MD   Esc/q: Quit"
+		footerText = " Enter: Open   /: Commands   Esc: Quit"
 	}
 	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
 
