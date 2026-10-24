@@ -65,7 +65,7 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 	height := 24
 
 	if targetPath == "" {
-		browser, err := NewBrowserState(absCwd)
+		browser, err := NewBrowserState(absCwd, absCwd)
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +88,7 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 	}
 
 	if info.IsDir() {
-		browser, err := NewBrowserState(absTarget)
+		browser, err := NewBrowserState(absTarget, absTarget)
 		if err != nil {
 			return nil, err
 		}
@@ -101,11 +101,17 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 		}, nil
 	}
 
-	// Target is a file: initialize the File Browser in the file's parent directory
-	// with the cursor on that file, and push the Reader View on top if supported.
+	// Target is a file:
+	// - If the file is within the working directory (absCwd), use absCwd as the top-level bound.
+	// - If the file is outside the working directory, use its immediate parent directory as the bound.
 	parentDir := filepath.Dir(absTarget)
 	fileName := filepath.Base(absTarget)
-	browser, err := NewBrowserState(parentDir)
+	boundRoot := parentDir
+	if isWithinRoot(absTarget, absCwd) {
+		boundRoot = absCwd
+	}
+
+	browser, err := NewBrowserState(parentDir, boundRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -113,14 +119,14 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 
 	m := &AppModel{
 		Mode:    ModeBrowser,
-		RootDir: absCwd,
+		RootDir: boundRoot,
 		Browser: browser,
 		Width:   width,
 		Height:  height,
 	}
 
 	if IsSupportedMarkdown(fileName) {
-		reader, err := NewReaderState(absTarget, absCwd, width, height, m.ShowSyntax, m.AutoReload)
+		reader, err := NewReaderState(absTarget, boundRoot, width, height, m.ShowSyntax, m.AutoReload)
 		if err != nil {
 			return nil, err
 		}

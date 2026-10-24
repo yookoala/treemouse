@@ -101,19 +101,19 @@ func TestFileBrowserFilterAndNavigation(t *testing.T) {
 		t.Fatalf("NewBrowserState failed: %v", err)
 	}
 
-	// Expect "..", "sub", "readme.md", "script.py"
-	if len(b.Entries) != 4 {
-		t.Fatalf("expected 4 entries in ALL mode, got %d", len(b.Entries))
+	// At top-level bound (tmp), ".." should NOT be shown: expect "sub", "readme.md", "script.py"
+	if len(b.Entries) != 3 {
+		t.Fatalf("expected 3 entries in ALL mode at top-level bound, got %d", len(b.Entries))
 	}
-	if !b.Entries[2].Supported {
+	if !b.Entries[1].Supported {
 		t.Errorf("expected readme.md to be supported")
 	}
-	if b.Entries[3].Supported {
+	if b.Entries[2].Supported {
 		t.Errorf("expected script.py to be unsupported")
 	}
 
 	// Unsupported item can still be highlighted by cursor navigation
-	b.MoveCursor(3, 20)
+	b.MoveCursor(2, 20)
 	sel, ok := b.Selected()
 	if !ok || sel.Name != "script.py" {
 		t.Errorf("expected cursor to highlight unsupported file script.py, got %+v", sel)
@@ -124,8 +124,8 @@ func TestFileBrowserFilterAndNavigation(t *testing.T) {
 	if !b.FilterMD {
 		t.Errorf("expected FilterMD to be true")
 	}
-	if len(b.Entries) != 3 {
-		t.Fatalf("expected 3 entries in MD ONLY mode (.., sub, readme.md), got %d", len(b.Entries))
+	if len(b.Entries) != 2 {
+		t.Fatalf("expected 2 entries in MD ONLY mode (sub, readme.md), got %d", len(b.Entries))
 	}
 }
 
@@ -483,5 +483,139 @@ func TestFileChangeDetectionAndAutoReload(t *testing.T) {
 	}
 	if !strings.Contains(app.View(), "Version 3") || !strings.Contains(app.View(), "Auto Reload") {
 		t.Errorf("expected view to automatically update to 'Version 3' and show 'Auto Reload' when AutoReload is on")
+	}
+}
+
+func TestBoundedFileBrowsing(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(origWd) }()
+
+	// Create workspace tree:
+	// root/
+	//   work/
+	//     nested/
+	//       inside.md
+	//   outside/
+	//     external.md
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	nestedDir := filepath.Join(workDir, "nested")
+	outsideDir := filepath.Join(root, "outside")
+	_ = os.MkdirAll(nestedDir, 0o755)
+	_ = os.MkdirAll(outsideDir, 0o755)
+
+	insideFile := filepath.Join(nestedDir, "inside.md")
+	externalFile := filepath.Join(outsideDir, "external.md")
+	_ = os.WriteFile(insideFile, []byte("# Inside"), 0o644)
+	_ = os.WriteFile(externalFile, []byte("# External"), 0o644)
+
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	// Case 1: No argument -> bounded to working directory (workDir)
+	app1, err := NewAppModel("")
+	if err != nil {
+		t.Fatalf("NewAppModel(''): %v", err)
+	}
+	if app1.Browser.RootDir != workDir {
+		t.Errorf("Case 1 RootDir = %q, want %q", app1.Browser.RootDir, workDir)
+	}
+	if app1.Browser.CanGoParent() {
+		t.Errorf("Case 1 expected CanGoParent() == false at top-level working directory")
+	}
+
+	// Case 2: Folder specified -> bounded to specified folder (nestedDir)
+	app2, err := NewAppModel(nestedDir)
+	if err != nil {
+		t.Fatalf("NewAppModel(nestedDir): %v", err)
+	}
+	if app2.Browser.RootDir != nestedDir {
+		t.Errorf("Case 2 RootDir = %q, want %q", app2.Browser.RootDir, nestedDir)
+	}
+	_ = app2.Browser.GoParent()
+	if app2.Browser.Dir != nestedDir {
+		t.Errorf("Case 2 expected GoParent() to stay at bound %q, got %q", nestedDir, app2.Browser.Dir)
+	}
+
+	// Case 3: File inside working directory -> bounded to working directory (workDir)
+	app3, err := NewAppModel(insideFile)
+	if err != nil {
+		t.Fatalf("NewAppModel(insideFile): %v", err)
+	}
+	if app3.Browser.RootDir != workDir {
+		t.Errorf("Case 3 RootDir = %q, want %q", app3.Browser.RootDir, workDir)
+	}
+	if !app3.Browser.CanGoParent() {
+		t.Errorf("Case 3 expected CanGoParent() == true from nestedDir up to workDir")
+	}
+	_ = app3.Browser.GoParent()
+	if app3.Browser.Dir != workDir {
+		t.Errorf("Case 3 expected GoParent() to reach workDir %q, got %q", workDir, app3.Browser.Dir)
+	}
+	if app3.Browser.CanGoParent() {
+		t.Errorf("Case 3 expected CanGoParent() == false once at workDir bound")
+	}
+
+	// Case 4: File outside working directory -> bounded to immediate parent of file (outsideDir)
+	app4, err := NewAppModel(externalFile)
+	if err != nil {
+		t.Fatalf("NewAppModel(externalFile): %v", err)
+	}
+	if app4.Browser.RootDir != outsideDir {
+		t.Errorf("Case 4 RootDir = %q, want %q", app4.Browser.RootDir, outsideDir)
+	}
+	if app4.Browser.CanGoParent() {
+		t.Errorf("Case 4 expected CanGoParent() == false at immediate parent bound outsideDir")
+	}
+}
+
+func TestBrowserInfoSidebarAndResponsiveBehavior(t *testing.T) {
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "sample.md")
+	_ = os.WriteFile(mdPath, []byte("# Title\n\nSome markdown content."), 0o644)
+
+	app, err := NewAppModel(tmp)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+
+	// Wide screen (>= 80 cols): Browser Info Sidebar should be open by default
+	app.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	if app.Browser.IsNarrow || !app.Browser.SidebarOpen {
+		t.Fatalf("expected Browser Info Sidebar to be open on wide screen")
+	}
+
+	// At top-level bound, "sample.md" is at index 0
+	view := app.View()
+	for _, expected := range []string{"Item Info", "MIME Type", "text/markdown", "Permissions", "Created", "Modified"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("expected wide browser sidebar to contain %q, got:\n%s", expected, view)
+		}
+	}
+
+	// Resize to narrow mobile screen (< 80 cols): Browser Info Sidebar should auto-collapse
+	app.Update(tea.WindowSizeMsg{Width: 45, Height: 20})
+	if !app.Browser.IsNarrow || app.Browser.SidebarOpen {
+		t.Errorf("expected Browser Info Sidebar to auto-collapse on narrow screen")
+	}
+
+	// Press 't' on narrow screen: expands full-screen Item Info overlay
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if !app.Browser.SidebarOpen || !app.Browser.SidebarFocused {
+		t.Errorf("expected 't' to open and focus Browser Info Sidebar overlay on narrow screen")
+	}
+	overlayView := app.View()
+	if !strings.Contains(overlayView, "[Overlay]") || !strings.Contains(overlayView, "text/markdown") {
+		t.Errorf("expected mobile overlay to show Item Info and MIME type, got:\n%s", overlayView)
+	}
+
+	// Press Esc from mobile overlay -> closes overlay and returns to file list (without opening Quit popup yet)
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.Browser.SidebarOpen || app.ShowQuitConfirm {
+		t.Errorf("expected Esc from mobile info overlay to return to file browser without triggering quit popup")
 	}
 }

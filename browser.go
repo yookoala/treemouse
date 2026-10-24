@@ -33,6 +33,7 @@ type ItemMetadata struct {
 
 // BrowserState holds the state for the File Browser (base mode) and its Info Sidebar.
 type BrowserState struct {
+	RootDir         string // Top-level bound directory; cannot navigate above this
 	Dir             string
 	AllEntries      []FileEntry
 	Entries         []FileEntry
@@ -165,12 +166,20 @@ func toLowerASCII(b byte) byte {
 }
 
 // NewBrowserState creates a BrowserState initialized at the given directory.
-func NewBrowserState(dir string) (*BrowserState, error) {
+// An optional rootDir specifies the top-level bound directory (defaults to dir if omitted).
+func NewBrowserState(dir string, rootDir ...string) (*BrowserState, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
+	boundRoot := absDir
+	if len(rootDir) > 0 && rootDir[0] != "" {
+		if absRoot, err := filepath.Abs(rootDir[0]); err == nil {
+			boundRoot = absRoot
+		}
+	}
 	b := &BrowserState{
+		RootDir:     boundRoot,
 		Dir:         absDir,
 		SidebarOpen: true, // Default open on wide screens; OnResize adjusts if narrow
 		IsNarrow:    false,
@@ -179,6 +188,27 @@ func NewBrowserState(dir string) (*BrowserState, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// isWithinRoot reports whether targetPath is inside or equal to rootPath.
+func isWithinRoot(targetPath, rootPath string) bool {
+	if rootPath == "" {
+		return true
+	}
+	rel, err := filepath.Rel(rootPath, targetPath)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// CanGoParent returns true if the current directory is strictly below RootDir.
+func (b *BrowserState) CanGoParent() bool {
+	parent := filepath.Dir(b.Dir)
+	if parent == b.Dir || b.Dir == b.RootDir {
+		return false
+	}
+	return isWithinRoot(parent, b.RootDir)
 }
 
 // OnResize updates responsive state for the File Browser sidebar when terminal dimensions change.
@@ -295,7 +325,7 @@ func (b *BrowserState) LoadDir(dir string, selectName string) error {
 
 	var all []FileEntry
 	parent := filepath.Dir(absDir)
-	if parent != absDir {
+	if parent != absDir && absDir != b.RootDir && isWithinRoot(parent, b.RootDir) {
 		all = append(all, FileEntry{
 			Name:      "..",
 			Path:      parent,
@@ -393,12 +423,13 @@ func (b *BrowserState) Selected() (FileEntry, bool) {
 	return FileEntry{}, false
 }
 
-// GoParent navigates to the parent directory and highlights the directory just exited.
+// GoParent navigates to the parent directory and highlights the directory just exited,
+// bounded by b.RootDir.
 func (b *BrowserState) GoParent() error {
-	parent := filepath.Dir(b.Dir)
-	if parent == b.Dir {
+	if !b.CanGoParent() {
 		return nil
 	}
+	parent := filepath.Dir(b.Dir)
 	prevName := filepath.Base(b.Dir)
 	return b.LoadDir(parent, prevName)
 }
