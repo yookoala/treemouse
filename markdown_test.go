@@ -619,3 +619,45 @@ func TestBrowserInfoSidebarAndResponsiveBehavior(t *testing.T) {
 		t.Errorf("expected Esc from mobile info overlay to return to file browser without triggering quit popup")
 	}
 }
+
+func TestReaderEditCommand(t *testing.T) {
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "editme.md")
+	_ = os.WriteFile(mdPath, []byte("# Before Edit"), 0o644)
+
+	t.Setenv("EDITOR", "true")
+
+	app, err := NewAppModel(mdPath)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+
+	// Verify "Edit File in $EDITOR" is in the "/" Command Palette
+	cmds := app.availableCommands()
+	foundEdit := false
+	for _, c := range cmds {
+		if c.ID == "edit_file" && c.Shortcut == "[e]" {
+			foundEdit = true
+			break
+		}
+	}
+	if !foundEdit {
+		t.Errorf("expected edit_file command in Reader command palette, got %+v", cmds)
+	}
+
+	// Pressing 'e' in Reader returns a non-nil ExecProcess Tea command and stays in ModeReader
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd == nil {
+		t.Fatalf("expected pressing 'e' in Reader to return tea.ExecProcess cmd")
+	}
+	if app.Mode != ModeReader {
+		t.Errorf("expected app to remain in ModeReader during/after editor invocation, got %v", app.Mode)
+	}
+
+	// Simulate editor modifying the file and terminating (editorFinishedMsg)
+	_ = os.WriteFile(mdPath, []byte("# After Edit"), 0o644)
+	app.Update(editorFinishedMsg{err: nil})
+	if !app.Reader.FileModified {
+		t.Errorf("expected Reader to detect file modification immediately when editor exits")
+	}
+}

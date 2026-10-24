@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,9 +13,31 @@ import (
 
 type fileCheckTickMsg time.Time
 
+type editorFinishedMsg struct {
+	err error
+}
+
 func watchFileTickCmd() tea.Cmd {
 	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 		return fileCheckTickMsg(t)
+	})
+}
+
+func openEditorCmd(filePath string) tea.Cmd {
+	editor := strings.TrimSpace(os.Getenv("EDITOR"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("VISUAL"))
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	parts := strings.Fields(editor)
+	bin := parts[0]
+	args := append(parts[1:], filePath)
+	c := exec.Command(bin, args...)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err: err}
 	})
 }
 
@@ -155,6 +178,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, watchFileTickCmd()
 
+	case editorFinishedMsg:
+		if m.Mode == ModeReader && m.Reader != nil {
+			if m.Reader.CheckFileChanged() && m.AutoReload {
+				_ = m.Reader.Reload(m.Width, m.Height)
+			}
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
@@ -277,6 +308,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			sidebarLabel = "Expand Header Sidebar"
 		}
 		all = []CommandOption{
+			{ID: "edit_file", Label: "Edit File in $EDITOR", Shortcut: "[e]"},
 			{ID: "reload_file", Label: "Reload Current File from Disk", Shortcut: "[r]"},
 			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
@@ -399,6 +431,10 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 	}
 
 	switch id {
+	case "edit_file":
+		if m.Reader != nil {
+			return m, openEditorCmd(m.Reader.FilePath)
+		}
 	case "reload_file":
 		if m.Reader != nil {
 			_ = m.Reader.Reload(m.Width, m.Height)
@@ -535,6 +571,11 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 	bodyHeight := m.Height - 2
 	if bodyHeight < 1 {
 		bodyHeight = 1
+	}
+
+	// Edit in $EDITOR shortcut in Reader View
+	if key == "e" {
+		return m, openEditorCmd(m.Reader.FilePath)
 	}
 
 	// Manual reload shortcut in Reader View
@@ -743,6 +784,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Toggle Markdown-Only Filter", "[f] "},
 		{" Reader View", ""},
 		{"   Scroll Line / Page", "[↑/↓ / PgUp/PgDn] "},
+		{"   Edit File in $EDITOR", "[e] "},
 		{"   Reload Modified File", "[r] "},
 		{"   Toggle Auto-Reload on Change", "[a] "},
 		{"   Toggle Markdown Syntax & Comments", "[m] "},
