@@ -11,6 +11,7 @@ import (
 // HeaderItem represents a parsed Markdown header and its rendered line position.
 type HeaderItem struct {
 	Level      int
+	Depth      int    // 0-based relative indentation depth based on ancestor headers in the file
 	Title      string // Clean title without leading '#' or inline syntax
 	RawTitle   string // Raw title with inline syntax intact
 	Prefix     string // e.g., "#", "##", "###"
@@ -284,9 +285,40 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 		outLines = append(outLines, styleLine("", width, bgMain, fgDefault))
 	}
 
+	assignRelativeHeaderDepths(headers)
+
 	return RenderedDoc{
 		Lines:   outLines,
 		Headers: headers,
+	}
+}
+
+// assignRelativeHeaderDepths computes the 0-based relative indentation depth for each header
+// based on the distinct heading levels present in the document (e.g., if a file only uses
+// H2 and H3, H2 gets Depth 0 and H3 gets Depth 1).
+func assignRelativeHeaderDepths(headers []HeaderItem) {
+	if len(headers) == 0 {
+		return
+	}
+	var present [7]bool
+	for _, h := range headers {
+		if h.Level >= 1 && h.Level <= 6 {
+			present[h.Level] = true
+		}
+	}
+	var rankMap [7]int
+	rank := 0
+	for lvl := 1; lvl <= 6; lvl++ {
+		if present[lvl] {
+			rankMap[lvl] = rank
+			rank++
+		}
+	}
+	for i := range headers {
+		lvl := headers[i].Level
+		if lvl >= 1 && lvl <= 6 {
+			headers[i].Depth = rankMap[lvl]
+		}
 	}
 }
 

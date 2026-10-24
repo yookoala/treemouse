@@ -388,7 +388,7 @@ func (r *ReaderState) ActiveContextHeaders(bodyHeight int) []HeaderItem {
 }
 
 func (r *ReaderState) renderContextHeaderLine(h HeaderItem, width int) string {
-	indent := strings.Repeat("  ", h.Level-1)
+	indent := strings.Repeat("  ", h.Depth)
 	hCol := headerColor(h.Level)
 	var text string
 	if r.ShowSyntax {
@@ -538,7 +538,7 @@ func (r *ReaderState) renderSidebarRow(row int, sw int) string {
 		cursor = fgActiveCursor + "▸ "
 	}
 
-	indent := strings.Repeat("  ", h.Level-1)
+	indent := strings.Repeat("  ", h.Depth)
 	hCol := headerColor(h.Level)
 	var text string
 	if r.ShowSyntax {

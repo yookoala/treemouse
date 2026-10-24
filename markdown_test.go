@@ -725,3 +725,59 @@ func TestHorizontalRuleRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestRelativeHeaderIndentation(t *testing.T) {
+	// File with no H1, only H2 and H3: H2 should have Depth 0 (unindented), H3 should have Depth 1 (indented once)
+	var lines []string
+	lines = append(lines, "## Section Two")
+	lines = append(lines, "Line 1")
+	lines = append(lines, "### Subsection Three")
+	for i := 0; i < 20; i++ {
+		lines = append(lines, "Body text")
+	}
+
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "no_h1.md")
+	_ = os.WriteFile(mdPath, []byte(strings.Join(lines, "\n")), 0o644)
+
+	r, err := NewReaderState(mdPath, tmp, 80, 20, false)
+	if err != nil {
+		t.Fatalf("NewReaderState failed: %v", err)
+	}
+
+	if len(r.Rendered.Headers) != 2 {
+		t.Fatalf("expected 2 headers, got %d", len(r.Rendered.Headers))
+	}
+	if r.Rendered.Headers[0].Depth != 0 {
+		t.Errorf("expected H2 (top-most level in file) to have Depth 0, got %d", r.Rendered.Headers[0].Depth)
+	}
+	if r.Rendered.Headers[1].Depth != 1 {
+		t.Errorf("expected H3 (second level in file) to have Depth 1, got %d", r.Rendered.Headers[1].Depth)
+	}
+
+	// Verify sticky context header lines use relative indentation:
+	// H2 has 1 leading margin space + 0 indent spaces; H3 has 1 leading margin space + 2 indent spaces
+	r.Scroll = 5
+	ctx := r.ActiveContextHeaders(18)
+	if len(ctx) != 2 {
+		t.Fatalf("expected 2 sticky context headers, got %d", len(ctx))
+	}
+	h2Sticky := r.renderContextHeaderLine(ctx[0], 50)
+	h3Sticky := r.renderContextHeaderLine(ctx[1], 50)
+	if !strings.Contains(h2Sticky, " "+fgH2+"Section Two") {
+		t.Errorf("expected H2 sticky header to have 0 relative indentation, got: %q", h2Sticky)
+	}
+	if !strings.Contains(h3Sticky, "   "+fgH3+"Subsection Three") {
+		t.Errorf("expected H3 sticky header to have 1 relative indentation (2 spaces), got: %q", h3Sticky)
+	}
+
+	// Verify sidebar rows also use relative indentation
+	sbRow0 := r.renderSidebarRow(0, 30)
+	sbRow1 := r.renderSidebarRow(1, 30)
+	if !strings.Contains(sbRow0, "▸ "+fgH2+"Section Two") {
+		t.Errorf("expected H2 sidebar row to have 0 relative indentation, got: %q", sbRow0)
+	}
+	if !strings.Contains(sbRow1, "     "+fgH3+"Subsection Three") {
+		t.Errorf("expected H3 sidebar row to have 1 relative indentation, got: %q", sbRow1)
+	}
+}
