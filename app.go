@@ -152,6 +152,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.Browser != nil {
+			m.Browser.OnResize(m.Width, m.Height)
+		}
 		if m.Reader != nil {
 			m.Reader.OnResize(m.Width, m.Height)
 		}
@@ -283,8 +286,16 @@ func (m *AppModel) availableCommands() []CommandOption {
 		if m.Browser.FilterMD {
 			filterLabel = "Toggle Filter: Show All Files (Currently: MD ONLY)"
 		}
+		sidebarLabel := "Toggle Item Info Sidebar"
+		if m.Browser.SidebarOpen {
+			sidebarLabel = "Hide Item Info Sidebar"
+		} else {
+			sidebarLabel = "Expand Item Info Sidebar"
+		}
 		all = []CommandOption{
 			{ID: "open_selected", Label: "Open Selected Item", Shortcut: "[Enter]"},
+			{ID: "toggle_sidebar", Label: sidebarLabel, Shortcut: "[t]"},
+			{ID: "focus_sidebar", Label: "Switch Focus: Files / Info Sidebar", Shortcut: "[Tab]"},
 			{ID: "toggle_filter", Label: filterLabel, Shortcut: "[f]"},
 			{ID: "parent_dir", Label: "Go to Parent Directory", Shortcut: "[Bksp]"},
 			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
@@ -397,12 +408,16 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 	case "open_selected":
 		return m.updateBrowser("enter")
 	case "toggle_sidebar":
-		if m.Reader != nil {
+		if m.Mode == ModeReader && m.Reader != nil {
 			m.Reader.ToggleSidebar(m.Width, m.Height)
+		} else if m.Browser != nil {
+			m.Browser.ToggleSidebar()
 		}
 	case "focus_sidebar":
-		if m.Reader != nil {
+		if m.Mode == ModeReader && m.Reader != nil {
 			m.Reader.ToggleFocus(m.Width, m.Height)
+		} else if m.Browser != nil {
+			m.Browser.ToggleFocus()
 		}
 	case "scroll_top":
 		if m.Reader != nil {
@@ -427,6 +442,29 @@ func (m *AppModel) updateBrowser(key string) (tea.Model, tea.Cmd) {
 	bodyHeight := m.Height - 2
 	if bodyHeight < 1 {
 		bodyHeight = 1
+	}
+
+	// Quick sidebar expand/collapse key works in both mobile and desktop sizes
+	if key == "t" {
+		m.Browser.ToggleSidebar()
+		return m, nil
+	}
+
+	if key == "tab" {
+		m.Browser.ToggleFocus()
+		return m, nil
+	}
+
+	// When sidebar is focused (or open as mobile full-screen overlay), Esc returns to the file list
+	if m.Browser.SidebarFocused || (m.Browser.IsNarrow && m.Browser.SidebarOpen) {
+		switch key {
+		case "esc", "q":
+			m.Browser.SidebarFocused = false
+			if m.Browser.IsNarrow {
+				m.Browser.SidebarOpen = false
+			}
+			return m, nil
+		}
 	}
 
 	switch key {
@@ -695,6 +733,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Move Cursor", "[↑/↓ / j/k] "},
 		{"   Open Folder or Markdown File", "[Enter / l] "},
 		{"   Parent Directory", "[Bksp / h] "},
+		{"   Toggle Item Info Sidebar", "[t] "},
 		{"   Toggle Markdown-Only Filter", "[f] "},
 		{" Reader View", ""},
 		{"   Scroll Line / Page", "[↑/↓ / PgUp/PgDn] "},

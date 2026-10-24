@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FileEntry represents a directory or file item in the File Browser.
@@ -16,15 +20,32 @@ type FileEntry struct {
 	Supported bool // true for directories and supported Markdown files
 }
 
-// BrowserState holds the state for the File Browser (base mode).
+// ItemMetadata holds the inspected metadata for the highlighted item in the File Browser sidebar.
+type ItemMetadata struct {
+	Name        string
+	Kind        string
+	MIMEType    string
+	Size        string
+	Permissions string
+	Created     string
+	Modified    string
+}
+
+// BrowserState holds the state for the File Browser (base mode) and its Info Sidebar.
 type BrowserState struct {
-	Dir        string
-	AllEntries []FileEntry
-	Entries    []FileEntry
-	Cursor     int
-	Scroll     int
-	FilterMD   bool   // When true, only show folders and supported Markdown files
-	StatusMsg  string // Ephemeral status message (e.g., when pressing Enter on unsupported file)
+	Dir             string
+	AllEntries      []FileEntry
+	Entries         []FileEntry
+	Cursor          int
+	Scroll          int
+	FilterMD        bool   // When true, only show folders and supported Markdown files
+	StatusMsg       string // Ephemeral status message (e.g., when pressing Enter on unsupported file)
+	SidebarOpen     bool
+	SidebarFocused  bool
+	IsNarrow        bool
+	CachedMetaPath  string
+	CachedMetaMtime time.Time
+	CachedMeta      ItemMetadata
 }
 
 // IsSupportedMarkdown checks whether a filename is a supported Markdown file.
@@ -150,12 +171,74 @@ func NewBrowserState(dir string) (*BrowserState, error) {
 		return nil, err
 	}
 	b := &BrowserState{
-		Dir: absDir,
+		Dir:         absDir,
+		SidebarOpen: true, // Default open on wide screens; OnResize adjusts if narrow
+		IsNarrow:    false,
 	}
 	if err := b.LoadDir(absDir, ""); err != nil {
 		return nil, err
 	}
 	return b, nil
+}
+
+// OnResize updates responsive state for the File Browser sidebar when terminal dimensions change.
+func (b *BrowserState) OnResize(width, height int) {
+	wasNarrow := b.IsNarrow
+	b.IsNarrow = width < ResponsiveBreakpoint
+
+	if b.IsNarrow && !wasNarrow {
+		// Automatically collapse sidebar when transitioning to narrow/mobile screen
+		b.SidebarOpen = false
+		b.SidebarFocused = false
+	} else if !b.IsNarrow && wasNarrow {
+		// Re-open sidebar on wide screen
+		b.SidebarOpen = true
+		b.SidebarFocused = false
+	}
+}
+
+// ToggleSidebar expands or collapses the Item Info Sidebar on both mobile and desktop sizes.
+func (b *BrowserState) ToggleSidebar() {
+	b.SidebarOpen = !b.SidebarOpen
+	if b.SidebarOpen {
+		if b.IsNarrow {
+			b.SidebarFocused = true
+		}
+	} else {
+		b.SidebarFocused = false
+	}
+}
+
+// ToggleFocus switches focus between the file list and the info sidebar.
+func (b *BrowserState) ToggleFocus() {
+	if !b.SidebarOpen {
+		b.SidebarOpen = true
+		b.SidebarFocused = true
+		return
+	}
+	if b.IsNarrow {
+		b.SidebarOpen = false
+		b.SidebarFocused = false
+		return
+	}
+	b.SidebarFocused = !b.SidebarFocused
+}
+
+func (b *BrowserState) sidebarWidth(totalWidth int) int {
+	if !b.SidebarOpen || b.IsNarrow {
+		return 0
+	}
+	sw := totalWidth * 32 / 100
+	if sw < 28 {
+		sw = 28
+	}
+	if sw > 40 {
+		sw = 40
+	}
+	if sw > totalWidth/2 {
+		sw = totalWidth / 2
+	}
+	return sw
 }
 
 // LoadDir reads the directory entries, sorts folders first then files, and optionally highlights selectName.
@@ -171,6 +254,7 @@ func (b *BrowserState) LoadDir(dir string, selectName string) error {
 
 	b.Dir = absDir
 	b.StatusMsg = ""
+	b.CachedMetaPath = ""
 
 	var dirs []FileEntry
 	var files []FileEntry
@@ -319,7 +403,190 @@ func (b *BrowserState) GoParent() error {
 	return b.LoadDir(parent, prevName)
 }
 
-// RenderLines renders the full-screen File Browser (header bar, content rows, footer bar).
+// SelectedMetadata returns the inspected ItemMetadata for the currently highlighted entry.
+func (b *BrowserState) SelectedMetadata() ItemMetadata {
+	entry, ok := b.Selected()
+	if !ok {
+		return ItemMetadata{}
+	}
+	info, err := os.Stat(entry.Path)
+	if err == nil && b.CachedMetaPath == entry.Path && b.CachedMetaMtime.Equal(info.ModTime()) {
+		return b.CachedMeta
+	}
+
+	meta := inspectEntryMetadata(entry, info, err)
+	if err == nil {
+		b.CachedMetaPath = entry.Path
+		b.CachedMetaMtime = info.ModTime()
+		b.CachedMeta = meta
+	}
+	return meta
+}
+
+func inspectEntryMetadata(entry FileEntry, info os.FileInfo, statErr error) ItemMetadata {
+	name := entry.Name
+	if entry.IsParent {
+		name = ".. (" + filepath.Base(entry.Path) + ")"
+	} else if entry.IsDir {
+		name = entry.Name + "/"
+	}
+
+	if statErr != nil || info == nil {
+		return ItemMetadata{
+			Name:        name,
+			Kind:        "Unknown",
+			MIMEType:    "unknown",
+			Size:        "-",
+			Permissions: "-",
+			Created:     "-",
+			Modified:    "-",
+		}
+	}
+
+	modTime := info.ModTime()
+	createdTime := getCreationTime(entry.Path, modTime)
+	perm := fmt.Sprintf("%s (%04o)", info.Mode().Perm().String(), info.Mode().Perm())
+
+	var kind, mimeType, sizeStr string
+	if info.IsDir() {
+		if entry.IsParent {
+			kind = "Parent Directory"
+		} else {
+			kind = "Directory"
+		}
+		mimeType = "inode/directory"
+		if entries, err := os.ReadDir(entry.Path); err == nil {
+			sizeStr = fmt.Sprintf("%d items (%s)", len(entries), formatByteSize(info.Size()))
+		} else {
+			sizeStr = formatByteSize(info.Size())
+		}
+	} else {
+		if entry.Supported {
+			kind = "Markdown Document"
+		} else {
+			kind = "File (Unsupported)"
+		}
+		mimeType = detectFileMIMEType(entry.Path)
+		sizeStr = formatByteSize(info.Size())
+	}
+
+	return ItemMetadata{
+		Name:        name,
+		Kind:        kind,
+		MIMEType:    mimeType,
+		Size:        sizeStr,
+		Permissions: perm,
+		Created:     createdTime.Format("2006-01-02 15:04:05"),
+		Modified:    modTime.Format("2006-01-02 15:04:05"),
+	}
+}
+
+func detectFileMIMEType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".md", ".markdown":
+		return "text/markdown"
+	case ".py":
+		return "text/x-python"
+	case ".go":
+		return "text/x-go"
+	case ".json":
+		return "application/json"
+	case ".toml":
+		return "application/toml"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".sh":
+		return "text/x-shellscript"
+	case ".webvtt", ".vtt":
+		return "text/vtt"
+	case ".txt":
+		return "text/plain"
+	}
+
+	if byExt := mime.TypeByExtension(ext); byExt != "" {
+		if semi := strings.IndexByte(byExt, ';'); semi > 0 {
+			return strings.TrimSpace(byExt[:semi])
+		}
+		return byExt
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	defer f.Close()
+
+	var buf [512]byte
+	n, _ := f.Read(buf[:])
+	if n == 0 {
+		return "inode/x-empty"
+	}
+	detected := http.DetectContentType(buf[:n])
+	if semi := strings.IndexByte(detected, ';'); semi > 0 {
+		return strings.TrimSpace(detected[:semi])
+	}
+	return detected
+}
+
+func formatByteSize(b int64) string {
+	if b < 1024 {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(1024), 0
+	for n := b / 1024; n >= 1024 && exp < 5; n /= 1024 {
+		div *= 1024
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
+	return fmt.Sprintf("%.1f %s (%d B)", float64(b)/float64(div), units[exp], b)
+}
+
+// buildInfoSidebarRows formats the metadata lines for the given sidebar width.
+func (b *BrowserState) buildInfoSidebarRows(sw int) []string {
+	meta := b.SelectedMetadata()
+	if meta.Name == "" {
+		return []string{styleLine(" (no selection)", sw, bgSidebar, fgMuted)}
+	}
+
+	type field struct {
+		label string
+		val   string
+		valFg string
+	}
+
+	nameFg := fgBright + ansiBold
+	if entry, ok := b.Selected(); ok {
+		if entry.IsDir {
+			nameFg = fgFolder
+		} else if !entry.Supported {
+			nameFg = fgUnsupported
+		} else {
+			nameFg = fgActiveCursor
+		}
+	}
+
+	fields := []field{
+		{"Name", meta.Name, nameFg},
+		{"Type", meta.Kind, fgDefault},
+		{"MIME Type", meta.MIMEType, fgH2},
+		{"Size", meta.Size, fgH3},
+		{"Permissions", meta.Permissions, fgDefault},
+		{"Created", meta.Created, fgDefault},
+		{"Modified", meta.Modified, fgDefault},
+	}
+
+	var rows []string
+	rows = append(rows, styleLine("", sw, bgSidebar, fgDefault))
+	for _, f := range fields {
+		rows = append(rows, styleLine(" "+fgMuted+f.label, sw, bgSidebar, fgMuted))
+		rows = append(rows, styleLine("   "+f.valFg+f.val, sw, bgSidebar, fgDefault))
+		rows = append(rows, styleLine("", sw, bgSidebar, fgDefault))
+	}
+	return rows
+}
+
+// RenderLines renders the full-screen File Browser (including wide split sidebar or narrow full-screen overlay).
 func (b *BrowserState) RenderLines(width, height int) []string {
 	if width < 10 {
 		width = 10
@@ -327,7 +594,16 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 	if height < 3 {
 		height = 3
 	}
+	b.OnResize(width, height)
 	bodyHeight := height - 2
+
+	// Case 1: Narrow / Mobile mode with Sidebar expanded -> Full-screen overlay
+	if b.IsNarrow && b.SidebarOpen {
+		return b.renderMobileSidebarOverlay(width, height)
+	}
+
+	sw := b.sidebarWidth(width)
+	mainW := width - sw
 	b.EnsureVisible(bodyHeight)
 
 	var lines []string
@@ -338,54 +614,83 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 		filterLabel = "[MD ONLY] "
 	}
 	headerLeft := " 📁 " + b.Dir
-	lines = append(lines, styleBarWithRight(headerLeft, filterLabel, width, bgBar, fgBright+ansiBold, fgFilterBadge))
+	mainHeader := styleBarWithRight(headerLeft, filterLabel, mainW, bgBar, fgBright+ansiBold, fgFilterBadge)
+
+	if sw > 0 {
+		sbHeaderTitle := " Item Info"
+		if b.SidebarFocused {
+			sbHeaderTitle = " ▸ Item Info"
+		}
+		sbHeader := styleLine(sbHeaderTitle, sw, bgSidebarHeader, fgSidebarTitle)
+		lines = append(lines, mainHeader+sbHeader)
+	} else {
+		lines = append(lines, mainHeader)
+	}
+
+	var sbRows []string
+	if sw > 0 {
+		sbRows = b.buildInfoSidebarRows(sw)
+	}
 
 	// 2. Content Area
 	for row := 0; row < bodyHeight; row++ {
 		idx := b.Scroll + row
+		var mainLine string
 		if idx >= len(b.Entries) {
-			lines = append(lines, styleLine("", width, bgMain, fgDefault))
-			continue
-		}
-		entry := b.Entries[idx]
-		isSelected := idx == b.Cursor
-
-		rowBg := bgMain
-		prefix := "   "
-		if isSelected {
-			rowBg = bgHighlight
-			prefix = " " + fgActiveCursor + "▸ "
-		}
-
-		var itemText string
-		if entry.IsParent {
-			if isSelected {
-				itemText = prefix + fgActiveCursor + "📁 .. (Parent Directory)"
-			} else {
-				itemText = prefix + fgFolder + "📁 .."
-			}
-		} else if entry.IsDir {
-			if isSelected {
-				itemText = prefix + fgActiveCursor + "📁 " + entry.Name + "/"
-			} else {
-				itemText = prefix + fgFolder + "📁 " + entry.Name + "/"
-			}
-		} else if entry.Supported {
-			if isSelected {
-				itemText = prefix + fgActiveCursor + "📄 " + entry.Name
-			} else {
-				itemText = prefix + fgDefault + "📄 " + entry.Name
-			}
+			mainLine = styleLine("", mainW, bgMain, fgDefault)
 		} else {
-			// Unsupported file: distinct dimmed color, still highlightable during navigation
+			entry := b.Entries[idx]
+			isSelected := idx == b.Cursor
+
+			rowBg := bgMain
+			prefix := "   "
 			if isSelected {
-				itemText = prefix + fgUnsupported + "📄 " + entry.Name + " (unsupported)"
-			} else {
-				itemText = prefix + fgUnsupported + "📄 " + entry.Name
+				rowBg = bgHighlight
+				prefix = " " + fgActiveCursor + "▸ "
 			}
+
+			var itemText string
+			if entry.IsParent {
+				if isSelected {
+					itemText = prefix + fgActiveCursor + "📁 .. (Parent Directory)"
+				} else {
+					itemText = prefix + fgFolder + "📁 .."
+				}
+			} else if entry.IsDir {
+				if isSelected {
+					itemText = prefix + fgActiveCursor + "📁 " + entry.Name + "/"
+				} else {
+					itemText = prefix + fgFolder + "📁 " + entry.Name + "/"
+				}
+			} else if entry.Supported {
+				if isSelected {
+					itemText = prefix + fgActiveCursor + "📄 " + entry.Name
+				} else {
+					itemText = prefix + fgDefault + "📄 " + entry.Name
+				}
+			} else {
+				// Unsupported file: distinct dimmed color, still highlightable during navigation
+				if isSelected {
+					itemText = prefix + fgUnsupported + "📄 " + entry.Name + " (unsupported)"
+				} else {
+					itemText = prefix + fgUnsupported + "📄 " + entry.Name
+				}
+			}
+
+			mainLine = styleLine(itemText, mainW, rowBg, fgDefault)
 		}
 
-		lines = append(lines, styleLine(itemText, width, rowBg, fgDefault))
+		if sw > 0 {
+			var sbLine string
+			if row < len(sbRows) {
+				sbLine = sbRows[row]
+			} else {
+				sbLine = styleLine("", sw, bgSidebar, fgDefault)
+			}
+			lines = append(lines, mainLine+sbLine)
+		} else {
+			lines = append(lines, mainLine)
+		}
 	}
 
 	// 3. Bottom Footer Bar (only essential features: Open, Commands, Quit)
@@ -401,5 +706,29 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 	}
 	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
 
+	return lines
+}
+
+func (b *BrowserState) renderMobileSidebarOverlay(width, height int) []string {
+	bodyHeight := height - 2
+	var lines []string
+	meta := b.SelectedMetadata()
+	headerTitle := " Item Info " + meta.Name
+	lines = append(lines, styleBarWithRight(headerTitle, "[Overlay] ", width, bgSidebarHeader, fgSidebarTitle, fgMuted))
+
+	sbRows := b.buildInfoSidebarRows(width)
+	for row := 0; row < bodyHeight; row++ {
+		if row < len(sbRows) {
+			lines = append(lines, sbRows[row])
+		} else {
+			lines = append(lines, styleLine("", width, bgSidebar, fgDefault))
+		}
+	}
+
+	footer := formatFooterHints(bgSidebarHeader,
+		HintPair{Key: "/", Desc: "Commands"},
+		HintPair{Key: "Esc", Desc: "Quit"},
+	)
+	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
 	return lines
 }
