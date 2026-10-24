@@ -575,8 +575,8 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	}
 
 	var popupLines []string
-	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", "[/: Close] ", popupW, bgBar, fgSidebarTitle, fgMuted))
-	filterLine := " Filter: " + fgBright + m.CommandQuery + fgActiveCursor + "▎"
+	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", "[/ Close] ", popupW, bgBar, fgSidebarTitle, fgMuted))
+	filterLine := " Filter " + fgBright + m.CommandQuery + fgActiveCursor + "▎"
 	popupLines = append(popupLines, styleLine(filterLine, popupW, bgSidebarHeader, fgMuted))
 
 	if len(cmds) == 0 {
@@ -608,11 +608,22 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 		}
 	}
 
-	popupLines = append(popupLines, styleLine(" ↑/↓: Select   Type: Filter   Enter: Run   Esc: Close", popupW, bgBar, fgMuted))
+	popupFooter := formatFooterHints(bgBar,
+		HintPair{Key: "↑/↓", Desc: "Select"},
+		HintPair{Key: "Type", Desc: "Filter"},
+		HintPair{Key: "Enter", Desc: "Run"},
+		HintPair{Key: "Esc", Desc: "Close"},
+	)
+	popupLines = append(popupLines, styleLine(popupFooter, popupW, bgBar, fgMuted))
 
 	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
 	if len(overlaid) > 0 {
-		overlaid[len(overlaid)-1] = styleLine(" Enter: Open   /: Commands   Esc: Quit", m.Width, bgBar, fgMuted)
+		baseFooter := formatFooterHints(bgBar,
+			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Quit"},
+		)
+		overlaid[len(overlaid)-1] = styleLine(baseFooter, m.Width, bgBar, fgMuted)
 	}
 	return overlaid
 }
@@ -644,7 +655,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 	}
 
 	var popupLines []string
-	popupLines = append(popupLines, styleBarWithRight(" 📖 Help Manual", "[Esc: Close] ", popupW, bgBar, fgActiveCursor, fgMuted))
+	popupLines = append(popupLines, styleBarWithRight(" 📖 Help Manual", "[Esc Close] ", popupW, bgBar, fgActiveCursor, fgMuted))
 	for _, item := range helpItems {
 		if item.right == "" {
 			popupLines = append(popupLines, styleLine(item.left, popupW, bgSidebarHeader, fgH3))
@@ -652,7 +663,11 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 			popupLines = append(popupLines, styleBarWithRight(item.left, item.right, popupW, bgSidebar, fgDefault, fgFilterBadge))
 		}
 	}
-	popupLines = append(popupLines, styleLine(" Press Esc or Enter to close", popupW, bgBar, fgMuted))
+	helpFooter := formatFooterHints(bgBar,
+		HintPair{Key: "Enter", Desc: "Close"},
+		HintPair{Key: "Esc", Desc: "Close"},
+	)
+	popupLines = append(popupLines, styleLine(helpFooter, popupW, bgBar, fgMuted))
 
 	return overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
 }
@@ -676,7 +691,11 @@ func (m *AppModel) renderWithQuitPopup(baseLines []string) []string {
 
 	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
 	if len(overlaid) > 0 {
-		overlaid[len(overlaid)-1] = styleLine(" Press Y to confirm quit, or N to cancel", m.Width, bgBar, fgMuted)
+		quitFooter := formatFooterHints(bgBar,
+			HintPair{Key: "Y", Desc: "Confirm Quit"},
+			HintPair{Key: "N", Desc: "Cancel"},
+		)
+		overlaid[len(overlaid)-1] = styleLine(quitFooter, m.Width, bgBar, fgMuted)
 	}
 	return overlaid
 }

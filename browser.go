@@ -393,7 +393,11 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 	if b.StatusMsg != "" {
 		footerText = " " + fgWarn + b.StatusMsg
 	} else {
-		footerText = " Enter: Open   /: Commands   Esc: Quit"
+		footerText = formatFooterHints(bgBar,
+			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Quit"},
+		)
 	}
 	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
 

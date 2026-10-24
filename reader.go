@@ -279,6 +279,59 @@ func (r *ReaderState) ensureHeaderVisible(bodyHeight int) {
 	}
 }
 
+// ActiveContextHeaders returns the hierarchy of headers that the document text at
+// the current scroll offset is contextually under (from highest outer level to deepest inner level).
+func (r *ReaderState) ActiveContextHeaders(bodyHeight int) []HeaderItem {
+	if len(r.Rendered.Headers) == 0 || r.Scroll <= 0 {
+		return nil
+	}
+	maxLevels := bodyHeight / 3
+	if maxLevels < 1 {
+		maxLevels = 1
+	}
+	if maxLevels > 6 {
+		maxLevels = 6
+	}
+
+	var stack []HeaderItem
+	// Iterate iteratively so that as sticky header rows occupy the top of the viewport,
+	// any header pushed underneath the sticky banner also joins the active hierarchy.
+	for pass := 0; pass < 6; pass++ {
+		topDocLine := r.Scroll + len(stack)
+		var nextStack []HeaderItem
+		for _, h := range r.Rendered.Headers {
+			if h.RenderLine >= topDocLine {
+				break
+			}
+			for len(nextStack) > 0 && nextStack[len(nextStack)-1].Level >= h.Level {
+				nextStack = nextStack[:len(nextStack)-1]
+			}
+			nextStack = append(nextStack, h)
+		}
+		if len(nextStack) > maxLevels {
+			nextStack = nextStack[:maxLevels]
+		}
+		if len(nextStack) == len(stack) {
+			stack = nextStack
+			break
+		}
+		stack = nextStack
+	}
+	return stack
+}
+
+func (r *ReaderState) renderContextHeaderLine(h HeaderItem, width int) string {
+	indent := strings.Repeat("  ", h.Level-1)
+	hCol := headerColor(h.Level)
+	var text string
+	if r.ShowSyntax {
+		text = " " + indent + hCol + h.Prefix + " " + h.RawTitle
+	} else {
+		text = " " + indent + hCol + h.Title
+	}
+	return styleLine(text, width, bgContextBar, hCol)
+}
+
 // RenderLines produces the full-screen lines for the Reader View (including wide split sidebar or narrow full-screen overlay).
 func (r *ReaderState) RenderLines(width, height int) []string {
 	if width < 10 {
@@ -330,14 +383,19 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		lines = append(lines, mainHeader)
 	}
 
-	// 2. Body Rows
+	// 2. Body Rows (with sticky contextual headers pinned at the top of the reader pane)
+	ctxHeaders := r.ActiveContextHeaders(bodyHeight)
 	for row := 0; row < bodyHeight; row++ {
-		docIdx := r.Scroll + row
 		var mainLine string
-		if docIdx < len(r.Rendered.Lines) {
-			mainLine = r.Rendered.Lines[docIdx]
+		if row < len(ctxHeaders) {
+			mainLine = r.renderContextHeaderLine(ctxHeaders[row], mainW)
 		} else {
-			mainLine = styleLine("", mainW, bgMain, fgDefault)
+			docIdx := r.Scroll + row
+			if docIdx < len(r.Rendered.Lines) {
+				mainLine = r.Rendered.Lines[docIdx]
+			} else {
+				mainLine = styleLine("", mainW, bgMain, fgDefault)
+			}
 		}
 
 		if sw > 0 {
@@ -348,12 +406,19 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit)
+	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit — without colons)
 	var footerText string
 	if r.SidebarFocused {
-		footerText = " Enter: Open   /: Commands   Esc: Quit"
+		footerText = formatFooterHints(bgBar,
+			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Quit"},
+		)
 	} else {
-		footerText = " /: Commands   Esc: Quit"
+		footerText = formatFooterHints(bgBar,
+			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Quit"},
+		)
 	}
 	lines = append(lines, styleLine(footerText, width, bgBar, fgMuted))
 
@@ -409,7 +474,11 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 		lines = append(lines, r.renderSidebarRow(row, width))
 	}
 
-	footer := " Enter: Open   /: Commands   Esc: Quit"
+	footer := formatFooterHints(bgSidebarHeader,
+		HintPair{Key: "Enter", Desc: "Open"},
+		HintPair{Key: "/", Desc: "Commands"},
+		HintPair{Key: "Esc", Desc: "Quit"},
+	)
 	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
 	return lines
 }

@@ -20,6 +20,7 @@ const (
 
 	// Backgrounds
 	bgMain            = "\x1b[48;5;233m" // Deep dark background for main content
+	bgContextBar      = "\x1b[48;5;234m" // Sticky contextual headers background (between header bar and main content)
 	bgSidebar         = "\x1b[48;5;235m" // Slightly lighter dark background for right sidebar
 	bgBar             = "\x1b[48;5;236m" // Top header bar & bottom footer bar background
 	bgCode            = "\x1b[48;5;236m" // Inline/block code background
@@ -30,7 +31,9 @@ const (
 	// Foregrounds
 	fgDefault         = "\x1b[38;5;252m" // Standard readable text
 	fgBright          = "\x1b[38;5;255m" // Bright white text
-	fgMuted           = "\x1b[38;5;248m" // Footer hints & secondary info
+	fgHintKey         = "\x1b[1;38;5;254m" // Bright key in footer hints
+	fgHintDesc        = "\x1b[38;5;244m" // Darker description in footer hints
+	fgMuted           = "\x1b[38;5;248m" // Secondary info
 	fgUnsupported     = "\x1b[38;5;240m" // Dimmed color for unsupported file types
 	fgQuote           = "\x1b[38;5;250m" // Blockquote text
 	fgQuoteBar        = "\x1b[38;5;242m" // Blockquote vertical bar & HR
@@ -69,6 +72,22 @@ func headerColor(level int) string {
 	default:
 		return fgH6
 	}
+}
+
+// HintPair represents a key and its usage label for footer bars.
+type HintPair struct {
+	Key  string
+	Desc string
+}
+
+// formatFooterHints formats a slice of HintPair without colons, using bright text
+// for the key and darker text for the usage description.
+func formatFooterHints(bg string, pairs ...HintPair) string {
+	var parts []string
+	for _, p := range pairs {
+		parts = append(parts, fgHintKey+p.Key+ansiReset+bg+" "+fgHintDesc+p.Desc)
+	}
+	return " " + strings.Join(parts, "   ")
 }
 
 // visibleWidth calculates the terminal display width of a string, ignoring ANSI escape sequences.

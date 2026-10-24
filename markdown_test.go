@@ -306,10 +306,13 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	}
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	// Check minimal footer in Reader view
+	// Check minimal footer in Reader view (without colons, using bright key + darker description)
 	view := app.View()
-	if !strings.Contains(view, "/: Commands") || !strings.Contains(view, "Esc: Quit") {
-		t.Errorf("expected minimal footer with '/: Commands' and 'Esc: Quit', got:\n%s", view)
+	if !strings.Contains(view, "Commands") || !strings.Contains(view, "Quit") {
+		t.Errorf("expected minimal footer with 'Commands' and 'Quit', got:\n%s", view)
+	}
+	if strings.Contains(view, "/:") || strings.Contains(view, "Esc:") {
+		t.Errorf("expected footer key hints to not contain ':', got:\n%s", view)
 	}
 	if strings.Contains(view, "PgUp/PgDn") || strings.Contains(view, "Toggle Sidebar") {
 		t.Errorf("expected secondary features to be hidden from bottom footer")
@@ -337,5 +340,62 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	}
 	if !app.ShowSyntax || !app.Reader.ShowSyntax {
 		t.Errorf("expected toggle_syntax command to enable ShowSyntax")
+	}
+}
+
+func TestContextualStickyHeaders(t *testing.T) {
+	var lines []string
+	lines = append(lines, "# Book One")
+	lines = append(lines, "Intro line 1")
+	lines = append(lines, "Intro line 2")
+	lines = append(lines, "## Chapter Alpha")
+	lines = append(lines, "Alpha line 1")
+	lines = append(lines, "Alpha line 2")
+	lines = append(lines, "### Scene 1")
+	for i := 0; i < 30; i++ {
+		lines = append(lines, "Body paragraph line")
+	}
+	lines = append(lines, "## Chapter Beta")
+	for i := 0; i < 30; i++ {
+		lines = append(lines, "Beta paragraph line")
+	}
+
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "book.md")
+	_ = os.WriteFile(mdPath, []byte(strings.Join(lines, "\n")), 0o644)
+
+	r, err := NewReaderState(mdPath, tmp, 80, 20, false)
+	if err != nil {
+		t.Fatalf("NewReaderState failed: %v", err)
+	}
+
+	// Scroll into Scene 1 body (past H1, H2, H3)
+	r.Scroll = 10
+	ctx := r.ActiveContextHeaders(18)
+	if len(ctx) != 3 {
+		t.Fatalf("expected 3 contextual headers (H1, H2, H3), got %d: %+v", len(ctx), ctx)
+	}
+	if ctx[0].Title != "Book One" || ctx[1].Title != "Chapter Alpha" || ctx[2].Title != "Scene 1" {
+		t.Errorf("unexpected contextual hierarchy: %+v", ctx)
+	}
+
+	// Verify rendered view shows sticky context rows with bgContextBar
+	renderedLines := r.RenderLines(80, 20)
+	// Row 0 is top bar, Rows 1..3 should be sticky context headers with bgContextBar
+	for i := 1; i <= 3; i++ {
+		if !strings.Contains(renderedLines[i], bgContextBar) {
+			t.Errorf("expected row %d to have sticky header background bgContextBar", i)
+		}
+	}
+
+	// Scroll into Chapter Beta (H2): should pop Chapter Alpha & Scene 1, leaving [Book One, Chapter Beta]
+	betaLine := r.Rendered.Headers[3].RenderLine
+	r.Scroll = betaLine + 5
+	ctxBeta := r.ActiveContextHeaders(18)
+	if len(ctxBeta) != 2 {
+		t.Fatalf("expected 2 contextual headers (H1 Book One, H2 Chapter Beta), got %d: %+v", len(ctxBeta), ctxBeta)
+	}
+	if ctxBeta[0].Title != "Book One" || ctxBeta[1].Title != "Chapter Beta" {
+		t.Errorf("unexpected contextual hierarchy under Chapter Beta: %+v", ctxBeta)
 	}
 }
