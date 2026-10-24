@@ -64,11 +64,15 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 	inCodeBlock := false
 	fenceMarker := ""
 	inHTMLComment := false
+	lastRenderedEmpty := false
+	commentSkippedSinceEmpty := false
 
 	for srcIdx, line := range rawLines {
 		// 1. Check fenced code blocks first (comments inside code blocks are literal code)
 		if !inHTMLComment {
 			if m := reFencedBlock.FindStringSubmatch(line); m != nil {
+				lastRenderedEmpty = false
+				commentSkippedSinceEmpty = false
 				marker := m[1][:3]
 				if !inCodeBlock {
 					inCodeBlock = true
@@ -117,6 +121,9 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 			var skipWholeLine bool
 			line, inHTMLComment, skipWholeLine = stripHTMLCommentsFromLine(line, inHTMLComment)
 			if skipWholeLine {
+				if lastRenderedEmpty {
+					commentSkippedSinceEmpty = true
+				}
 				continue
 			}
 		} else {
@@ -130,6 +137,7 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 				for _, wl := range wrapped {
 					outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
 				}
+				lastRenderedEmpty = false
 				continue
 			}
 			if strings.HasPrefix(trimmed, "<!--") {
@@ -139,6 +147,7 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 					for _, wl := range wrapped {
 						outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
 					}
+					lastRenderedEmpty = false
 					continue
 				}
 				if strings.HasSuffix(trimmed, "-->") {
@@ -146,6 +155,7 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 					for _, wl := range wrapped {
 						outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
 					}
+					lastRenderedEmpty = false
 					continue
 				}
 			}
@@ -153,9 +163,18 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 
 		// Empty line
 		if strings.TrimSpace(line) == "" {
+			// If comments were hidden between empty lines, collapse the surrounding empty lines into one
+			if !displaySyntax && lastRenderedEmpty && commentSkippedSinceEmpty {
+				continue
+			}
 			outLines = append(outLines, styleLine("", width, bgMain, fgDefault))
+			lastRenderedEmpty = true
+			commentSkippedSinceEmpty = false
 			continue
 		}
+
+		lastRenderedEmpty = false
+		commentSkippedSinceEmpty = false
 
 		// Horizontal rule (check before unordered list since "* * *" or "---" matches HR)
 		if reHR.MatchString(line) && !reATXHeader.MatchString(line) {

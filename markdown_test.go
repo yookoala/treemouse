@@ -661,3 +661,34 @@ func TestReaderEditCommand(t *testing.T) {
 		t.Errorf("expected Reader to detect file modification immediately when editor exits")
 	}
 }
+
+func TestCascadingEmptyLineCollapseAroundHiddenComments(t *testing.T) {
+	// 7 lines total:
+	// 0: "Paragraph A"
+	// 1: "" (empty)
+	// 2: "<!-- comment 1 -->"
+	// 3: "" (empty)
+	// 4: "<!-- multi-line\ncomment 2 -->"
+	// 5: "" (empty)
+	// 6: "Paragraph B"
+	src := strings.Join([]string{
+		"Paragraph A",
+		"",
+		"<!-- comment 1 -->",
+		"",
+		"<!-- multi-line",
+		"comment 2 -->",
+		"",
+		"Paragraph B",
+	}, "\n")
+
+	doc := RenderMarkdown(src, 80, false)
+	// All 5 middle lines (empty, comment, empty, comment, empty) should collapse into a single empty line,
+	// resulting in 3 lines total: "Paragraph A", "", "Paragraph B".
+	if len(doc.Lines) != 3 {
+		t.Fatalf("expected 3 rendered lines after cascading empty-line collapse, got %d:\n%s", len(doc.Lines), strings.Join(doc.Lines, "\n"))
+	}
+	if !strings.Contains(doc.Lines[0], "Paragraph A") || !strings.Contains(doc.Lines[2], "Paragraph B") {
+		t.Errorf("unexpected rendered lines: %+v", doc.Lines)
+	}
+}
