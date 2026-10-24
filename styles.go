@@ -58,6 +58,13 @@ const (
 	fgH6              = "\x1b[1;38;5;183m" // Lavender
 )
 
+func init() {
+	// Always treat East Asian Ambiguous width characters (such as box-drawing '─', '│',
+	// bullets '•', arrows '▸', and ellipsis '…') as 1 column wide so they match modern
+	// terminal emulators and do not misalign or overflow lines under CJK locales.
+	runewidth.DefaultCondition.EastAsianWidth = false
+}
+
 // headerColor returns the bold ANSI foreground escape sequence for header levels 1..6.
 func headerColor(level int) string {
 	switch level {

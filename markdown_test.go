@@ -692,3 +692,36 @@ func TestCascadingEmptyLineCollapseAroundHiddenComments(t *testing.T) {
 		t.Errorf("unexpected rendered lines: %+v", doc.Lines)
 	}
 }
+
+func TestHorizontalRuleRendering(t *testing.T) {
+	src := strings.Join([]string{
+		"Above",
+		"",
+		"---",
+		"***",
+		"___",
+		"- - -",
+		"",
+		"Below",
+	}, "\n")
+
+	width := 50
+	doc := RenderMarkdown(src, width, false)
+	if len(doc.Lines) != 8 {
+		t.Fatalf("expected 8 lines, got %d", len(doc.Lines))
+	}
+
+	expectedBar := strings.Repeat("─", width-2)
+	for _, idx := range []int{2, 3, 4, 5} {
+		line := doc.Lines[idx]
+		if !strings.Contains(line, expectedBar) {
+			t.Errorf("line %d expected full-width horizontal rule of %d '─' chars, got: %q", idx, width-2, line)
+		}
+		if strings.Contains(line, "…") {
+			t.Errorf("line %d horizontal rule should not be truncated with ellipsis: %q", idx, line)
+		}
+		if visibleWidth(line) != width {
+			t.Errorf("line %d visibleWidth = %d, want %d", idx, visibleWidth(line), width)
+		}
+	}
+}
