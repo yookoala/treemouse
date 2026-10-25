@@ -1044,14 +1044,10 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 		t.Fatalf("expected Browser hover at Y=2 to highlight entry index 1, got %d", app.Browser.Cursor)
 	}
 
-	// Mouse down + release on row Y=1 (first file entry `a.md`, index 0) opens `a.md` in Reader
+	// Simple mouse click (MouseActionPress) on row Y=1 (first file entry `a.md`, index 0) immediately opens `a.md` in Reader
 	app.Update(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	if app.Browser.Cursor != 0 {
-		t.Fatalf("expected Browser mouse press at Y=1 to highlight entry index 0, got %d", app.Browser.Cursor)
-	}
-	app.Update(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
 	if app.Mode != ModeReader || app.Reader == nil || app.Reader.FilePath != aPath {
-		t.Fatalf("expected Browser mouse release at Y=1 to open a.md in ModeReader, got mode=%v", app.Mode)
+		t.Fatalf("expected Browser mouse click at Y=1 to open a.md in ModeReader, got mode=%v", app.Mode)
 	}
 
 	// 2. Markdown Reader: Wheel down scrolls the document down, wheel up scrolls back to top
@@ -1073,9 +1069,8 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 			tableScreenY, app.Reader.SelectionMode, app.Reader.SelectedIdx)
 	}
 
-	// Mouse release on the table opens ModeTableViewer
+	// Simple mouse click (MouseActionPress) on the table opens ModeTableViewer immediately
 	app.Update(tea.MouseMsg{X: 5, Y: tableScreenY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	app.Update(tea.MouseMsg{X: 5, Y: tableScreenY, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
 	if app.Mode != ModeTableViewer || app.TableViewer == nil {
 		t.Fatalf("expected mouse click on table to open ModeTableViewer, got mode=%v", app.Mode)
 	}
@@ -1095,9 +1090,8 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 			app.TableViewer.CursorRow, app.TableViewer.CursorCol)
 	}
 
-	// Mouse click (press + release) on (row=1, col=0) opens the Cell Detail Popup
+	// Simple mouse click (MouseActionPress) on (row=1, col=0) opens the Cell Detail Popup immediately
 	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
 	if !app.TableViewer.ShowCellPopup {
 		t.Fatalf("expected clicking non-link cell in TableViewer to open ShowCellPopup")
 	}

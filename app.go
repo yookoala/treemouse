@@ -75,10 +75,6 @@ type AppModel struct {
 	ShowQuitConfirm bool
 	Width           int
 	Height          int
-	MousePressed    bool
-	MouseLastY      int
-	MouseLastX      int
-	MouseDragged    bool
 }
 
 // NewAppModel constructs the application model from an optional CLI path argument.
@@ -299,13 +295,13 @@ func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.UnsupportedMsg != "" {
-		if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			m.UnsupportedMsg = ""
 		}
 		return m, nil
 	}
 	if m.ShowHelpManual {
-		if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			m.ShowHelpManual = false
 		}
 		return m, nil
@@ -350,36 +346,14 @@ func (m *AppModel) updateBrowserMouse(msg tea.MouseMsg, bodyHeight int) (tea.Mod
 		return m, nil
 	}
 
-	// 2. Drag-to-pan or hover/click in the file list
+	// 2. Hover highlights item; simple mouse click (press) opens the item
 	switch msg.Action {
-	case tea.MouseActionPress:
-		if msg.Button == tea.MouseButtonLeft {
-			m.MousePressed = true
-			m.MouseDragged = false
-			m.MouseLastX = msg.X
-			m.MouseLastY = msg.Y
-			if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
-				m.Browser.Cursor = idx
-			}
-		}
 	case tea.MouseActionMotion:
-		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
-			dy := m.MouseLastY - msg.Y
-			if dy != 0 {
-				m.MouseDragged = true
-				m.Browser.ScrollBy(dy, bodyHeight)
-				m.MouseLastY = msg.Y
-			}
-			return m, nil
-		}
 		if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 			m.Browser.Cursor = idx
 		}
-	case tea.MouseActionRelease:
-		wasDragged := m.MouseDragged
-		m.MousePressed = false
-		m.MouseDragged = false
-		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
 			if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 				m.Browser.Cursor = idx
 				return m.updateBrowser("enter")
@@ -420,48 +394,21 @@ func (m *AppModel) updateReaderMouse(msg tea.MouseMsg, bodyHeight int) (tea.Mode
 		case tea.MouseActionPress:
 			if msg.Button == tea.MouseButtonLeft {
 				m.Reader.HeaderCursor = hIdx
-			}
-		case tea.MouseActionRelease:
-			if msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone {
-				m.Reader.HeaderCursor = hIdx
 				m.Reader.JumpToSelectedHeader(bodyHeight)
 			}
 		}
 		return m, nil
 	}
 
-	// 3. Main Reader pane: drag-to-pan, hover/mousedown highlight selectable item, mouseup opens selectable item
+	// 3. Main Reader pane: hover highlights selectable item; simple mouse click (press) opens selectable item
 	switch msg.Action {
-	case tea.MouseActionPress:
-		if msg.Button == tea.MouseButtonLeft {
-			m.MousePressed = true
-			m.MouseDragged = false
-			m.MouseLastX = msg.X
-			m.MouseLastY = msg.Y
-			if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
-				m.Reader.SelectionMode = true
-				m.Reader.SelectedIdx = selIdx
-			}
-		}
 	case tea.MouseActionMotion:
-		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
-			dy := m.MouseLastY - msg.Y
-			if dy != 0 {
-				m.MouseDragged = true
-				m.Reader.ScrollBy(dy, bodyHeight)
-				m.MouseLastY = msg.Y
-			}
-			return m, nil
-		}
 		if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 			m.Reader.SelectionMode = true
 			m.Reader.SelectedIdx = selIdx
 		}
-	case tea.MouseActionRelease:
-		wasDragged := m.MouseDragged
-		m.MousePressed = false
-		m.MouseDragged = false
-		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
 			if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 				m.Reader.SelectionMode = true
 				m.Reader.SelectedIdx = selIdx
@@ -483,7 +430,7 @@ func (m *AppModel) updateTableViewerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 			m.TableViewer.ScrollCellPopup(-2, m.Width, m.Height)
 		} else if msg.Button == tea.MouseButtonWheelDown {
 			m.TableViewer.ScrollCellPopup(2, m.Width, m.Height)
-		} else if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+		} else if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if _, dest, ok := m.TableViewer.ActiveCellLink(); ok {
 				m.TableViewer.ShowCellPopup = false
 				m.TableViewer.CellPopupScroll = 0
@@ -513,48 +460,15 @@ func (m *AppModel) updateTableViewerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 
-	// 2. Drag-to-pan or hover/click cells in Table Viewer
+	// 2. Hover highlights cell; simple mouse click (press) opens cell
 	switch msg.Action {
-	case tea.MouseActionPress:
-		if msg.Button == tea.MouseButtonLeft {
-			m.MousePressed = true
-			m.MouseDragged = false
-			m.MouseLastX = msg.X
-			m.MouseLastY = msg.Y
-			if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
-				m.TableViewer.CursorRow = rowIdx
-				m.TableViewer.CursorCol = colIdx
-			}
-		}
 	case tea.MouseActionMotion:
-		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
-			dy := m.MouseLastY - msg.Y
-			dx := m.MouseLastX - msg.X
-			if dy != 0 {
-				m.MouseDragged = true
-				m.TableViewer.MoveRow(dy)
-				m.MouseLastY = msg.Y
-			}
-			if dx >= 4 || dx <= -4 {
-				m.MouseDragged = true
-				if dx > 0 {
-					m.TableViewer.MoveCol(1)
-				} else {
-					m.TableViewer.MoveCol(-1)
-				}
-				m.MouseLastX = msg.X
-			}
-			return m, nil
-		}
 		if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 			m.TableViewer.CursorRow = rowIdx
 			m.TableViewer.CursorCol = colIdx
 		}
-	case tea.MouseActionRelease:
-		wasDragged := m.MouseDragged
-		m.MousePressed = false
-		m.MouseDragged = false
-		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
 			if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
 				m.TableViewer.CursorRow = rowIdx
 				m.TableViewer.CursorCol = colIdx
