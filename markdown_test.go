@@ -342,10 +342,10 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 		t.Errorf("expected secondary features to be hidden from bottom footer")
 	}
 
-	// Open Commands popup with "/"
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	// Open Commands popup with ":"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
 	if !app.ShowCommandMenu {
-		t.Fatalf("expected '/' to open Command Menu popup")
+		t.Fatalf("expected ':' to open Command Menu popup")
 	}
 
 	// Filter commands by typing "syntax"

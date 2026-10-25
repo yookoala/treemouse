@@ -66,7 +66,7 @@ type AppModel struct {
 	TableViewer     *TableViewerState
 	ShowSyntax      bool   // Whether Markdown syntax & HTML comments are displayed
 	AutoReload      bool   // Whether modified files are automatically reloaded (default: false)
-	ShowCommandMenu bool   // Whether the "/" Commands popup is open
+	ShowCommandMenu bool   // Whether the ":" Commands popup is open
 	CommandQuery    string
 	CommandCursor   int
 	CommandScroll   int
@@ -239,13 +239,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// 4. If "/" Commands Popup is open:
+		// 4. If ":" Commands Popup is open:
 		if m.ShowCommandMenu {
 			return m.updateCommandMenu(msg)
 		}
 
-		// 5. Global "/" shortcut opens the Commands popup from any mode
-		if key == "/" {
+		// 5. Global ":" shortcut opens the Commands popup (and "/" still opens Commands in File Browser / Table Viewer)
+		if key == ":" || (key == "/" && m.Mode != ModeReader) {
 			m.openCommandMenu()
 			return m, nil
 		}
@@ -590,11 +590,7 @@ func (m *AppModel) updateCommandMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmds := m.availableCommands()
 
 	switch key {
-	case "esc", "/":
-		// "/" toggles the command popup closed; Esc pops back to previous caller
-		if key == "/" && m.CommandQuery != "" {
-			// If user hasn't typed anything, "/" closes; if they typed, allow Esc to close
-		}
+	case "esc", ":":
 		m.ShowCommandMenu = false
 		return m, nil
 
@@ -1283,7 +1279,7 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	}
 
 	var popupLines []string
-	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", "[/ Close] ", popupW, bgBar, fgSidebarTitle, fgMuted))
+	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", "[: Close] ", popupW, bgBar, fgSidebarTitle, fgMuted))
 	filterLine := " Filter " + fgBright + m.CommandQuery + fgActiveCursor + "▎"
 	popupLines = append(popupLines, styleLine(filterLine, popupW, bgSidebarHeader, fgMuted))
 
@@ -1328,7 +1324,7 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	if len(overlaid) > 0 {
 		baseFooter := formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 		overlaid[len(overlaid)-1] = styleLine(baseFooter, m.Width, bgBar, fgMuted)
@@ -1365,7 +1361,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Toggle Markdown Syntax & Comments", "[m] "},
 		{"   Toggle Header Sidebar", "[t] "},
 		{"   Switch Focus (Reader / Sidebar)", "[Tab] "},
-		{"   Commands Palette", "[/] "},
+		{"   Commands Palette", "[:] "},
 	}
 
 	var popupLines []string

@@ -836,18 +836,18 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	} else if r.SidebarFocused {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 	} else if r.SelectionMode {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Exit Select"},
 		)
 	} else {
 		footerText = formatFooterHints(bgBar,
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 	}
@@ -939,7 +939,7 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 
 	footer := formatFooterHints(bgSidebarHeader,
 		HintPair{Key: "Enter", Desc: "Open"},
-		HintPair{Key: "/", Desc: "Commands"},
+		HintPair{Key: ":", Desc: "Commands"},
 		HintPair{Key: "Esc", Desc: "Quit"},
 	)
 	reloadBadge := r.reloadHintBadge(bgSidebarHeader)
