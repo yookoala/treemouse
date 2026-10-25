@@ -1117,3 +1117,115 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 		t.Fatalf("expected clicking non-link cell in TableViewer to open ShowCellPopup")
 	}
 }
+
+func TestReaderLiveTextSearchAndNavigation(t *testing.T) {
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "search.md")
+
+	var lines []string
+	lines = append(lines, "# Search Document")
+	lines = append(lines, "First line with TargetWord here.")
+	for i := 0; i < 25; i++ {
+		lines = append(lines, "Filler paragraph line.")
+	}
+	lines = append(lines, "Middle line with targetword in lowercase.")
+	for i := 0; i < 25; i++ {
+		lines = append(lines, "More filler paragraph line.")
+	}
+	lines = append(lines, "Final line with TARGETWORD in uppercase.")
+
+	_ = os.WriteFile(mdPath, []byte(strings.Join(lines, "\n")), 0o644)
+
+	app, err := NewAppModel(mdPath)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+	app.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+
+	// 1. Pressing "/" in Reader opens the bottom search bar (and does NOT open Command Menu)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if app.ShowCommandMenu {
+		t.Fatalf("expected '/' in Reader not to open Command Menu")
+	}
+	if !app.Reader.SearchActive {
+		t.Fatalf("expected '/' in Reader to activate bottom search bar")
+	}
+	if app.Reader.SearchCaseSensitive {
+		t.Fatalf("expected search to be case-insensitive by default")
+	}
+
+	// 2. Search as user types "TargetWord" -> should match all 3 occurrences (case-insensitive)
+	for _, r := range "TargetWord" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if len(app.Reader.SearchMatches) != 3 {
+		t.Fatalf("expected 3 case-insensitive matches for 'TargetWord', got %d", len(app.Reader.SearchMatches))
+	}
+	if app.Reader.SearchMatchIdx != 0 {
+		t.Fatalf("expected initial match index 0, got %d", app.Reader.SearchMatchIdx)
+	}
+
+	view := app.View()
+	if !strings.Contains(view, "1/3 matches") {
+		t.Errorf("expected bottom search bar to display '1/3 matches', got:\n%s", view)
+	}
+	if !strings.Contains(view, "Prev/Next") {
+		t.Errorf("expected bottom search bar to hint Prev/Next navigation, got:\n%s", view)
+	}
+
+	// 3. Navigate to next occurrence (Down arrow) and third occurrence (Enter)
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if app.Reader.SearchMatchIdx != 1 {
+		t.Fatalf("expected Down arrow to advance to match index 1, got %d", app.Reader.SearchMatchIdx)
+	}
+	if app.Reader.Scroll == 0 {
+		t.Errorf("expected Reader to scroll down to reveal second match")
+	}
+
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.Reader.SearchMatchIdx != 2 {
+		t.Fatalf("expected Enter to advance to match index 2, got %d", app.Reader.SearchMatchIdx)
+	}
+	scrollAtThirdMatch := app.Reader.Scroll
+
+	// Navigate to previous occurrence (Up arrow) and back to third (Down arrow)
+	app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if app.Reader.SearchMatchIdx != 1 {
+		t.Fatalf("expected Up arrow to go back to match index 1, got %d", app.Reader.SearchMatchIdx)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if app.Reader.SearchMatchIdx != 2 {
+		t.Fatalf("expected Down arrow to return to match index 2, got %d", app.Reader.SearchMatchIdx)
+	}
+	scrollAtThirdMatch = app.Reader.Scroll
+
+	// 4. Toggle case sensitivity with Tab -> only "TargetWord" (1 match) should match
+	app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if !app.Reader.SearchCaseSensitive {
+		t.Fatalf("expected Tab in search bar to enable case-sensitive search")
+	}
+	if len(app.Reader.SearchMatches) != 1 {
+		t.Fatalf("expected 1 exact-case match for 'TargetWord', got %d", len(app.Reader.SearchMatches))
+	}
+
+	// Toggle case sensitivity back off -> 3 matches again, jump to match 3
+	app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if app.Reader.SearchCaseSensitive || len(app.Reader.SearchMatches) != 3 {
+		t.Fatalf("expected Tab to restore case-insensitive search with 3 matches")
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	scrollAtThirdMatch = app.Reader.Scroll
+
+	// 5. Pressing Esc closes the search bar but keeps the final navigation scroll position
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.Reader.SearchActive {
+		t.Fatalf("expected Esc to close the bottom search bar")
+	}
+	if app.Mode != ModeReader {
+		t.Fatalf("expected Esc in search bar to stay in ModeReader, got %v", app.Mode)
+	}
+	if app.Reader.Scroll != scrollAtThirdMatch {
+		t.Errorf("expected Esc to preserve final navigation scroll position %d, got %d", scrollAtThirdMatch, app.Reader.Scroll)
+	}
+}

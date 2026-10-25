@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // ResponsiveBreakpoint is the terminal width below which the sidebar auto-collapses
@@ -20,29 +23,41 @@ type ReaderHistoryEntry struct {
 	SelectedIdx    int
 }
 
+// SearchMatch represents a single occurrence of a search query on a rendered document line.
+type SearchMatch struct {
+	RenderLine int
+	StartCol   int
+	EndCol     int
+}
+
 // ReaderState manages the Markdown Reader view and its Header Sidebar.
 type ReaderState struct {
-	FilePath       string
-	DisplayPath    string
-	RawContent     string
-	Rendered       RenderedDoc
-	LastRenderW    int
-	LastShowSyntax bool
-	ShowSyntax     bool
-	AutoReload     bool
-	LastModTime    time.Time
-	LastSize       int64
-	FileModified   bool // True when the file on disk has changed since last load
-	Scroll         int
-	SidebarOpen    bool
-	SidebarFocused bool
-	HeaderCursor   int
-	HeaderScroll   int
-	IsNarrow       bool
-	SelectionMode  bool // When true, up/down/left/right navigates links and tables
-	SelectedIdx    int  // Index into Rendered.Selectables
-	StatusMsg      string
-	History        []ReaderHistoryEntry
+	FilePath            string
+	DisplayPath         string
+	RawContent          string
+	Rendered            RenderedDoc
+	LastRenderW         int
+	LastShowSyntax      bool
+	ShowSyntax          bool
+	AutoReload          bool
+	LastModTime         time.Time
+	LastSize            int64
+	FileModified        bool // True when the file on disk has changed since last load
+	Scroll              int
+	SidebarOpen         bool
+	SidebarFocused      bool
+	HeaderCursor        int
+	HeaderScroll        int
+	IsNarrow            bool
+	SelectionMode       bool          // When true, up/down/left/right navigates links and tables
+	SelectedIdx         int           // Index into Rendered.Selectables
+	SearchActive        bool          // When true, the bottom search bar is open in the Reader
+	SearchQuery         string        // Live search query string
+	SearchCaseSensitive bool          // Default false (case-insensitive)
+	SearchMatches       []SearchMatch // All occurrences in Rendered.Lines
+	SearchMatchIdx      int           // 0-based index of currently focused match in SearchMatches
+	StatusMsg           string
+	History             []ReaderHistoryEntry
 }
 
 // NewReaderState loads a Markdown file and initializes the ReaderState for the given screen dimensions.
@@ -247,6 +262,9 @@ func (r *ReaderState) Reflow(totalWidth, totalHeight int) {
 			r.SelectedIdx = 0
 		} else if r.SelectedIdx >= len(r.Rendered.Selectables) {
 			r.SelectedIdx = len(r.Rendered.Selectables) - 1
+		}
+		if r.SearchActive && r.SearchQuery != "" {
+			r.recomputeSearchMatches()
 		}
 	}
 	bodyHeight := totalHeight - 2
@@ -479,6 +497,167 @@ func (r *ReaderState) ensureSelectedVisible(bodyHeight int) {
 	}
 }
 
+// OpenSearch opens the bottom search bar in the Reader.
+// It keeps the previous SearchCaseSensitive setting and resets the query for fresh typing.
+func (r *ReaderState) OpenSearch() {
+	r.SearchActive = true
+	r.SearchQuery = ""
+	r.SearchMatches = nil
+	r.SearchMatchIdx = 0
+	r.StatusMsg = ""
+	if r.IsNarrow && r.SidebarOpen {
+		r.SidebarOpen = false
+		r.SidebarFocused = false
+	} else {
+		r.SidebarFocused = false
+	}
+}
+
+// CloseSearch closes the bottom search bar while keeping the final scroll/navigation position.
+func (r *ReaderState) CloseSearch() {
+	r.SearchActive = false
+}
+
+// SetSearchQuery updates the live search query, recomputes all matches in the file,
+// and jumps to the nearest match at or below the current viewport (or wraps around).
+func (r *ReaderState) SetSearchQuery(query string, bodyHeight int) {
+	r.SearchQuery = query
+	r.recomputeSearchMatches()
+	if len(r.SearchMatches) == 0 {
+		r.SearchMatchIdx = 0
+		return
+	}
+	ctxLen := len(r.ActiveContextHeaders(bodyHeight))
+	visStart := r.Scroll + ctxLen
+	chosen := 0
+	for i, m := range r.SearchMatches {
+		if m.RenderLine >= visStart {
+			chosen = i
+			break
+		}
+	}
+	r.SearchMatchIdx = chosen
+	r.ensureSearchMatchVisible(bodyHeight)
+}
+
+// ToggleSearchCaseSensitivity toggles between case-insensitive (default) and case-sensitive search,
+// immediately recomputing matches for the current query.
+func (r *ReaderState) ToggleSearchCaseSensitivity(bodyHeight int) {
+	r.SearchCaseSensitive = !r.SearchCaseSensitive
+	r.SetSearchQuery(r.SearchQuery, bodyHeight)
+}
+
+// StepSearchMatch moves to the next (delta = +1) or previous (delta = -1) occurrence with wrap-around,
+// scrolling the viewport so the matched line is clearly visible.
+func (r *ReaderState) StepSearchMatch(delta int, bodyHeight int) {
+	n := len(r.SearchMatches)
+	if n == 0 {
+		return
+	}
+	r.SearchMatchIdx = (r.SearchMatchIdx + delta) % n
+	if r.SearchMatchIdx < 0 {
+		r.SearchMatchIdx += n
+	}
+	r.ensureSearchMatchVisible(bodyHeight)
+}
+
+func (r *ReaderState) recomputeSearchMatches() {
+	r.SearchMatches = nil
+	if r.SearchQuery == "" {
+		r.SearchMatchIdx = 0
+		return
+	}
+	qRunes := []rune(r.SearchQuery)
+	qLen := len(qRunes)
+	if qLen == 0 {
+		return
+	}
+
+	for lineIdx, styledLine := range r.Rendered.Lines {
+		plain := strings.TrimRight(stripANSI(styledLine), " ")
+		pRunes := []rune(plain)
+		if len(pRunes) < qLen {
+			continue
+		}
+
+		// Precompute visual start column of each rune on this line
+		colAt := make([]int, len(pRunes)+1)
+		col := 0
+		for i, ru := range pRunes {
+			colAt[i] = col
+			col += runewidth.RuneWidth(ru)
+		}
+		colAt[len(pRunes)] = col
+
+		for i := 0; i <= len(pRunes)-qLen; {
+			matched := true
+			for j := 0; j < qLen; j++ {
+				a := pRunes[i+j]
+				b := qRunes[j]
+				if r.SearchCaseSensitive {
+					if a != b {
+						matched = false
+						break
+					}
+				} else {
+					if unicode.ToLower(a) != unicode.ToLower(b) {
+						matched = false
+						break
+					}
+				}
+			}
+			if matched {
+				r.SearchMatches = append(r.SearchMatches, SearchMatch{
+					RenderLine: lineIdx,
+					StartCol:   colAt[i],
+					EndCol:     colAt[i+qLen],
+				})
+				i += qLen
+			} else {
+				i++
+			}
+		}
+	}
+
+	if len(r.SearchMatches) == 0 {
+		r.SearchMatchIdx = 0
+	} else if r.SearchMatchIdx >= len(r.SearchMatches) {
+		r.SearchMatchIdx = len(r.SearchMatches) - 1
+	} else if r.SearchMatchIdx < 0 {
+		r.SearchMatchIdx = 0
+	}
+}
+
+func (r *ReaderState) ensureSearchMatchVisible(bodyHeight int) {
+	if len(r.SearchMatches) == 0 || r.SearchMatchIdx < 0 || r.SearchMatchIdx >= len(r.SearchMatches) {
+		return
+	}
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	matchLine := r.SearchMatches[r.SearchMatchIdx].RenderLine
+	ctxLen := len(r.ActiveContextHeaders(bodyHeight))
+	visStart := r.Scroll + ctxLen
+	visEnd := r.Scroll + bodyHeight - 1
+
+	if matchLine < visStart {
+		r.Scroll = matchLine - ctxLen
+		if r.Scroll < 0 {
+			r.Scroll = 0
+		}
+		newCtxLen := len(r.ActiveContextHeaders(bodyHeight))
+		if matchLine < r.Scroll+newCtxLen {
+			r.Scroll = matchLine - newCtxLen
+		}
+	} else if matchLine > visEnd {
+		r.Scroll = matchLine - bodyHeight/2
+	}
+	r.clampScroll(bodyHeight)
+	if !r.SidebarFocused {
+		r.syncHeaderCursorToScroll()
+	}
+}
+
 // JumpToAnchor scrolls the reader to the header matching the given anchor slug or title.
 func (r *ReaderState) JumpToAnchor(anchor string, bodyHeight int) bool {
 	slug := normalizeHeadingSlug(anchor)
@@ -556,6 +735,10 @@ func (r *ReaderState) NavigateToFile(targetPath string, baseDir string, anchor s
 	r.Scroll = 0
 	r.SelectionMode = false
 	r.SelectedIdx = 0
+	r.SearchActive = false
+	r.SearchQuery = ""
+	r.SearchMatches = nil
+	r.SearchMatchIdx = 0
 	r.StatusMsg = ""
 	r.LastRenderW = 0
 	r.Reflow(width, height)
@@ -605,6 +788,10 @@ func (r *ReaderState) PopHistory(baseDir string, width, height int) bool {
 	if r.SelectedIdx >= len(r.Rendered.Selectables) {
 		r.SelectedIdx = maxInt(0, len(r.Rendered.Selectables)-1)
 	}
+	r.SearchActive = false
+	r.SearchQuery = ""
+	r.SearchMatches = nil
+	r.SearchMatchIdx = 0
 	r.StatusMsg = ""
 	r.clampScroll(height - 2)
 	r.syncHeaderCursorToScroll()
@@ -815,6 +1002,9 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 				if hasActiveItem && docIdx >= activeItem.StartLine && docIdx <= activeItem.EndLine {
 					mainLine = r.decorateSelectedLine(mainLine, docIdx, activeItem, mainW)
 				}
+				if r.SearchActive && len(r.SearchMatches) > 0 {
+					mainLine = r.decorateSearchMatches(mainLine, docIdx, mainW)
+				}
 			} else {
 				mainLine = styleLine("", mainW, bgMain, fgDefault)
 			}
@@ -828,25 +1018,32 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit — without colons,
-	// with the red "r reload" indicator at the right end of the footer bar when modified and AutoReload is off)
+	// 3. Bottom Footer Bar (or active bottom Search Bar when SearchActive is true)
+	if r.SearchActive {
+		lines = append(lines, r.renderSearchBar(width))
+		return lines
+	}
+
 	var footerText string
 	if r.StatusMsg != "" {
 		footerText = " " + fgWarn + r.StatusMsg
 	} else if r.SidebarFocused {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Search"},
 			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 	} else if r.SelectionMode {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Search"},
 			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Exit Select"},
 		)
 	} else {
 		footerText = formatFooterHints(bgBar,
+			HintPair{Key: "/", Desc: "Search"},
 			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
@@ -859,6 +1056,68 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	}
 
 	return lines
+}
+
+// decorateSearchMatches highlights all search matches on docIdx, using a bright highlight for the
+// active match (SearchMatchIdx) and a softer gold highlight for other occurrences on the line.
+func (r *ReaderState) decorateSearchMatches(line string, docIdx int, mainW int) string {
+	out := line
+	otherStyle := bgSearchMatch + fgBright + ansiBold
+	activeStyle := bgSearchCurrent + fgSearchCurrent
+	for i, m := range r.SearchMatches {
+		if m.RenderLine != docIdx {
+			continue
+		}
+		style := otherStyle
+		if i == r.SearchMatchIdx {
+			style = activeStyle
+		}
+		out = highlightANSIColRange(out, m.StartCol, m.EndCol, mainW, style)
+	}
+	return out
+}
+
+// renderSearchBar renders the interactive bottom search bar showing the live query,
+// match count, case sensitivity indicator, and prev/next/case/close shortcut hints.
+func (r *ReaderState) renderSearchBar(width int) string {
+	var matchInfo string
+	matchColor := fgFilterBadge
+	if r.SearchQuery == "" {
+		matchInfo = "0 matches"
+		matchColor = fgMuted
+	} else if len(r.SearchMatches) == 0 {
+		matchInfo = "0 matches"
+		matchColor = fgNo
+	} else {
+		matchInfo = fmt.Sprintf("%d/%d matches", r.SearchMatchIdx+1, len(r.SearchMatches))
+	}
+
+	caseLabel := "Aa:off"
+	caseDescColor := fgHintDesc
+	if r.SearchCaseSensitive {
+		caseLabel = "Aa:ON"
+		caseDescColor = fgFilterBadge
+	}
+
+	var rightHints string
+	if r.IsNarrow {
+		rightHints = fmt.Sprintf("%s[%s]%s  %s↑/↓%s%s Next/Prev  %s^I%s%s %s  %sEsc%s%s Close ",
+			matchColor, matchInfo, ansiReset+bgBar,
+			fgHintKey, ansiReset+bgBar, fgHintDesc,
+			fgHintKey, ansiReset+bgBar, caseDescColor, caseLabel,
+			fgHintKey, ansiReset+bgBar, fgHintDesc,
+		)
+	} else {
+		rightHints = fmt.Sprintf("%s[%s]%s   %s↑/↓%s%s Prev/Next   %sTab%s%s Case (%s)   %sEsc%s%s Close ",
+			matchColor, matchInfo, ansiReset+bgBar,
+			fgHintKey, ansiReset+bgBar, fgHintDesc,
+			fgHintKey, ansiReset+bgBar, caseDescColor, caseLabel,
+			fgHintKey, ansiReset+bgBar, fgHintDesc,
+		)
+	}
+
+	leftPrompt := " " + fgActiveCursor + "/" + fgBright + r.SearchQuery + fgActiveCursor + "▎"
+	return styleBarWithRight(leftPrompt, rightHints, width, bgBar, fgBright, fgMuted)
 }
 
 // decorateSelectedLine highlights the currently focused link or table in Selection Mode.
@@ -939,6 +1198,7 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 
 	footer := formatFooterHints(bgSidebarHeader,
 		HintPair{Key: "Enter", Desc: "Open"},
+		HintPair{Key: "/", Desc: "Search"},
 		HintPair{Key: ":", Desc: "Commands"},
 		HintPair{Key: "Esc", Desc: "Quit"},
 	)

@@ -28,11 +28,14 @@ const (
 	bgSidebarHeader   = "\x1b[48;5;238m" // Sidebar header bar & popup panel background
 	bgSidebarActive   = "\x1b[48;5;239m" // Active row inside sidebar when focused
 	bgSelectFocus     = "\x1b[48;5;24m"  // Highlight background for focused selectable link/table in Selection Mode
+	bgSearchMatch     = "\x1b[48;5;58m"  // Dark gold/olive background for non-active search matches
+	bgSearchCurrent   = "\x1b[48;5;214m" // Bright amber/orange background for current active search match
 	bgTableHeader     = "\x1b[48;5;236m" // Table header row background
 
 	// Foregrounds
 	fgDefault         = "\x1b[38;5;252m" // Standard readable text
 	fgBright          = "\x1b[38;5;255m" // Bright white text
+	fgSearchCurrent   = "\x1b[1;38;5;16m" // Bold black text on bright amber active search match
 	fgHintKey         = "\x1b[1;38;5;254m" // Bright key in footer hints
 	fgHintDesc        = "\x1b[38;5;244m" // Darker description in footer hints
 	fgMuted           = "\x1b[38;5;248m" // Secondary info

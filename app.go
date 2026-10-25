@@ -244,6 +244,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCommandMenu(msg)
 		}
 
+		// 4b. If Reader bottom Search Bar is active, route all keys to it:
+		if m.Mode == ModeReader && m.Reader != nil && m.Reader.SearchActive {
+			return m.updateReaderSearch(msg)
+		}
+
 		// 5. Global ":" shortcut opens the Commands popup (and "/" still opens Commands in File Browser / Table Viewer)
 		if key == ":" || (key == "/" && m.Mode != ModeReader) {
 			m.openCommandMenu()
@@ -535,6 +540,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			selectLabel = "Exit Selection Mode"
 		}
 		all = []CommandOption{
+			{ID: "search_text", Label: "Search Text in File", Shortcut: "[/]"},
 			{ID: "toggle_selection", Label: selectLabel, Shortcut: "[s]"},
 			{ID: "edit_file", Label: "Edit File in $EDITOR", Shortcut: "[e]"},
 			{ID: "reload_file", Label: "Reload Current File from Disk", Shortcut: "[r]"},
@@ -655,6 +661,10 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 	}
 
 	switch id {
+	case "search_text":
+		if m.Reader != nil {
+			m.Reader.OpenSearch()
+		}
 	case "toggle_selection":
 		if m.Reader != nil {
 			m.Reader.ToggleSelectionMode(bodyHeight)
@@ -820,6 +830,12 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 		bodyHeight = 1
 	}
 
+	// Open live text search bar with "/" in Reader View
+	if key == "/" {
+		m.Reader.OpenSearch()
+		return m, nil
+	}
+
 	// Edit in $EDITOR shortcut in Reader View
 	if key == "e" {
 		return m, openEditorCmd(m.Reader.FilePath)
@@ -913,6 +929,16 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 
 	// Main Reader navigation
 	switch key {
+	case "n":
+		if len(m.Reader.SearchMatches) > 0 {
+			m.Reader.StepSearchMatch(1, bodyHeight)
+			return m, nil
+		}
+	case "N":
+		if len(m.Reader.SearchMatches) > 0 {
+			m.Reader.StepSearchMatch(-1, bodyHeight)
+			return m, nil
+		}
 	case "esc", "q", "left":
 		m.Reader.StatusMsg = ""
 		// If we navigated here via a Markdown link, pop back to the previous document in history
@@ -950,6 +976,49 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 		m.Reader.ScrollToBottom(bodyHeight)
 	}
 
+	return m, nil
+}
+
+func (m *AppModel) updateReaderSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.Reader == nil {
+		return m, nil
+	}
+	bodyHeight := m.Height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	key := msg.String()
+	switch key {
+	case "esc":
+		m.Reader.CloseSearch()
+		return m, nil
+	case "down", "enter", "ctrl+n", "ctrl+j":
+		m.Reader.StepSearchMatch(1, bodyHeight)
+		return m, nil
+	case "up", "shift+enter", "ctrl+p", "ctrl+k":
+		m.Reader.StepSearchMatch(-1, bodyHeight)
+		return m, nil
+	case "tab", "ctrl+i", "alt+c", "ctrl+t":
+		m.Reader.ToggleSearchCaseSensitivity(bodyHeight)
+		return m, nil
+	case "backspace":
+		if len(m.Reader.SearchQuery) > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.Reader.SearchQuery)
+			newQuery := m.Reader.SearchQuery[:len(m.Reader.SearchQuery)-size]
+			m.Reader.SetSearchQuery(newQuery, bodyHeight)
+		}
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		m.Reader.SetSearchQuery(m.Reader.SearchQuery+string(msg.Runes), bodyHeight)
+		return m, nil
+	}
+	if msg.Type == tea.KeySpace {
+		m.Reader.SetSearchQuery(m.Reader.SearchQuery+" ", bodyHeight)
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -1353,6 +1422,9 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Toggle Markdown-Only Filter", "[f] "},
 		{" Reader View", ""},
 		{"   Scroll Line / Page", "[↑/↓ / PgUp/PgDn] "},
+		{"   Search Text in File", "[/] "},
+		{"   Prev / Next Search Match", "[↑ / ↓] "},
+		{"   Toggle Search Case Sensitivity", "[Tab] "},
 		{"   Toggle Selection Mode (Links/Tables)", "[s] "},
 		{"   Open Focused Link or Table", "[Enter] "},
 		{"   Edit File in $EDITOR", "[e] "},
