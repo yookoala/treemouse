@@ -27,6 +27,8 @@ const (
 	bgHighlight       = "\x1b[48;5;237m" // Active selected row background
 	bgSidebarHeader   = "\x1b[48;5;238m" // Sidebar header bar & popup panel background
 	bgSidebarActive   = "\x1b[48;5;239m" // Active row inside sidebar when focused
+	bgSelectFocus     = "\x1b[48;5;24m"  // Highlight background for focused selectable link/table in Selection Mode
+	bgTableHeader     = "\x1b[48;5;236m" // Table header row background
 
 	// Foregrounds
 	fgDefault         = "\x1b[38;5;252m" // Standard readable text
@@ -299,4 +301,42 @@ func sliceANSI(s string, startCol, endCol int, fallbackBg string) string {
 		out.WriteString(strings.Repeat(" ", endCol-col))
 	}
 	return out.String()
+}
+
+// highlightANSIColRange applies a highlight style (e.g. bgSelectFocus + fgBright + ansiBold + ansiUnderline)
+// to the visual column span [startCol, endCol) of an ANSI-styled line of totalWidth columns.
+func highlightANSIColRange(line string, startCol, endCol, totalWidth int, highlightStyle string) string {
+	if startCol < 0 {
+		startCol = 0
+	}
+	if endCol > totalWidth {
+		endCol = totalWidth
+	}
+	if endCol <= startCol {
+		return line
+	}
+	left := sliceANSI(line, 0, startCol, bgMain)
+	mid := stripANSI(sliceANSI(line, startCol, endCol, bgMain))
+	right := sliceANSI(line, endCol, totalWidth, bgMain)
+	return left + ansiReset + highlightStyle + mid + ansiReset + right + ansiReset
+}
+
+// stripANSI removes all ANSI escape sequences from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

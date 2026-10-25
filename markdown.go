@@ -19,10 +19,38 @@ type HeaderItem struct {
 	RenderLine int    // 0-based line in wrapped rendered output
 }
 
-// RenderedDoc holds the wrapped ANSI lines and extracted headers for a given width.
+// SelectableKind identifies the type of interactive item in Selection Mode.
+type SelectableKind int
+
+const (
+	SelectableLink SelectableKind = iota
+	SelectableTable
+)
+
+// SelectableSpan represents a visual column span [StartCol, EndCol) on a single rendered line.
+type SelectableSpan struct {
+	RenderLine int
+	StartCol   int
+	EndCol     int
+}
+
+// SelectableItem represents a focusable link or table in the Reader's Selection Mode.
+type SelectableItem struct {
+	Kind       SelectableKind
+	StartLine  int
+	EndLine    int // Inclusive
+	Spans      []SelectableSpan
+	LinkLabel  string
+	LinkTarget string
+	TableIndex int
+}
+
+// RenderedDoc holds the wrapped ANSI lines, extracted headers, tables, and selectable items for a given width.
 type RenderedDoc struct {
-	Lines   []string
-	Headers []HeaderItem
+	Lines       []string
+	Headers     []HeaderItem
+	Tables      []TableItem
+	Selectables []SelectableItem
 }
 
 var (
@@ -36,8 +64,11 @@ var (
 
 // styledToken represents a unit of text with its active ANSI formatting.
 type styledToken struct {
-	text  string
-	style string // ANSI sequences applied before text
+	text       string
+	style      string // ANSI sequences applied before text
+	linkIdx    int    // -1 if not a link; >= 0 index of link within the parsed block
+	linkLabel  string
+	linkTarget string
 }
 
 // RenderMarkdown parses raw Markdown content and formats it into wrapped ANSI lines
@@ -61,6 +92,8 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 	rawLines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
 	var outLines []string
 	var headers []HeaderItem
+	var tables []TableItem
+	var selectables []SelectableItem
 
 	inCodeBlock := false
 	fenceMarker := ""
@@ -68,7 +101,17 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 	lastRenderedEmpty := false
 	commentSkippedSinceEmpty := false
 
-	for srcIdx, line := range rawLines {
+	appendWrappedBlock := func(tokens []styledToken, firstPrefix, contPrefix, lineBg, baseFg string) {
+		baseLine := len(outLines)
+		wrapped, linkItems := wrapStyledTokensWithLinks(tokens, contentWidth, firstPrefix, contPrefix, lineBg, baseFg, baseLine)
+		for _, wl := range wrapped {
+			outLines = append(outLines, styleLine(" "+wl, width, lineBg, baseFg))
+		}
+		selectables = append(selectables, linkItems...)
+	}
+
+	for srcIdx := 0; srcIdx < len(rawLines); srcIdx++ {
+		line := rawLines[srcIdx]
 		// 1. Check fenced code blocks first (comments inside code blocks are literal code)
 		if !inHTMLComment {
 			if m := reFencedBlock.FindStringSubmatch(line); m != nil {
@@ -212,10 +255,28 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 				headerText = hashes + " " + rawTitle
 			}
 			tokens := parseInlineTokens(headerText, bgMain, hCol, displaySyntax)
-			wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, hCol)
-			for _, wl := range wrapped {
-				outLines = append(outLines, styleLine(" "+wl, width, bgMain, hCol))
+			appendWrappedBlock(tokens, "", "", bgMain, hCol)
+			continue
+		}
+
+		// GFM Pipe Table (`| Col1 | Col2 |\n| --- | --- |`)
+		if tbl, consumed, ok := parseTableBlock(rawLines, srcIdx, displaySyntax); ok {
+			tbl.Index = len(tables)
+			tbl.StartRenderLine = len(outLines)
+			tblLines := renderInlineTable(&tbl, width, contentWidth, displaySyntax)
+			outLines = append(outLines, tblLines...)
+			tbl.EndRenderLine = len(outLines) - 1
+			if tbl.EndRenderLine < tbl.StartRenderLine {
+				tbl.EndRenderLine = tbl.StartRenderLine
 			}
+			tables = append(tables, tbl)
+			selectables = append(selectables, SelectableItem{
+				Kind:       SelectableTable,
+				StartLine:  tbl.StartRenderLine,
+				EndLine:    tbl.EndRenderLine,
+				TableIndex: tbl.Index,
+			})
+			srcIdx += consumed - 1
 			continue
 		}
 
@@ -231,10 +292,7 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 			contPrefix := fgQuoteBar + markerStr + ansiReset + bgMain + fgQuote + ansiItalic
 			baseFg := fgQuote + ansiItalic
 			tokens := parseInlineTokens(qText, bgMain, baseFg, displaySyntax)
-			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, baseFg)
-			for _, wl := range wrapped {
-				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
-			}
+			appendWrappedBlock(tokens, firstPrefix, contPrefix, bgMain, baseFg)
 			continue
 		}
 
@@ -250,10 +308,7 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 			firstPrefix := indent + fgH3 + bulletDisplay + ansiReset + bgMain + fgDefault
 			contPrefix := indent + "  "
 			tokens := parseInlineTokens(itemText, bgMain, fgDefault, displaySyntax)
-			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
-			for _, wl := range wrapped {
-				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
-			}
+			appendWrappedBlock(tokens, firstPrefix, contPrefix, bgMain, fgDefault)
 			continue
 		}
 
@@ -265,20 +320,14 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 			firstPrefix := indent + fgH3 + num + " " + ansiReset + bgMain + fgDefault
 			contPrefix := indent + strings.Repeat(" ", visibleWidth(num)+1)
 			tokens := parseInlineTokens(itemText, bgMain, fgDefault, displaySyntax)
-			wrapped := wrapStyledTokens(tokens, contentWidth, firstPrefix, contPrefix, bgMain, fgDefault)
-			for _, wl := range wrapped {
-				outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
-			}
+			appendWrappedBlock(tokens, firstPrefix, contPrefix, bgMain, fgDefault)
 			continue
 		}
 
 		// Normal paragraph line
 		expanded := strings.ReplaceAll(line, "\t", "    ")
 		tokens := parseInlineTokens(expanded, bgMain, fgDefault, displaySyntax)
-		wrapped := wrapStyledTokens(tokens, contentWidth, "", "", bgMain, fgDefault)
-		for _, wl := range wrapped {
-			outLines = append(outLines, styleLine(" "+wl, width, bgMain, fgDefault))
-		}
+		appendWrappedBlock(tokens, "", "", bgMain, fgDefault)
 	}
 
 	if len(outLines) == 0 {
@@ -288,8 +337,10 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 	assignRelativeHeaderDepths(headers)
 
 	return RenderedDoc{
-		Lines:   outLines,
-		Headers: headers,
+		Lines:       outLines,
+		Headers:     headers,
+		Tables:      tables,
+		Selectables: selectables,
 	}
 }
 
@@ -377,12 +428,14 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 	i := 0
 	n := len(s)
 	var plain strings.Builder
+	nextLinkIdx := 0
 
 	flushPlain := func() {
 		if plain.Len() > 0 {
 			spans = append(spans, styledToken{
-				text:  plain.String(),
-				style: baseStyle,
+				text:    plain.String(),
+				style:   baseStyle,
+				linkIdx: -1,
 			})
 			plain.Reset()
 		}
@@ -395,8 +448,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 				flushPlain()
 				commentText := s[i : i+4+end+3]
 				spans = append(spans, styledToken{
-					text:  commentText,
-					style: ansiReset + lineBg + fgUnsupported,
+					text:    commentText,
+					style:   ansiReset + lineBg + fgUnsupported,
+					linkIdx: -1,
 				})
 				i += 4 + end + 3
 				continue
@@ -415,8 +469,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 					codeContent = s[i+1 : i+1+end]
 				}
 				spans = append(spans, styledToken{
-					text:  codeContent,
-					style: ansiReset + bgCode + fgCode,
+					text:    codeContent,
+					style:   ansiReset + bgCode + fgCode,
+					linkIdx: -1,
 				})
 				i += end + 2
 				continue
@@ -428,11 +483,16 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 			if linkLen := matchMarkdownLink(s[i:]); linkLen > 0 {
 				flushPlain()
 				rawLink := s[i : i+linkLen]
+				lbl, dest := parseMarkdownLinkParts(rawLink)
 				// Always keep full markdown brackets, quotes, and URL with ANSI underline
 				spans = append(spans, styledToken{
-					text:  rawLink,
-					style: baseStyle + fgLink + ansiUnderline,
+					text:       rawLink,
+					style:      baseStyle + fgLink + ansiUnderline,
+					linkIdx:    nextLinkIdx,
+					linkLabel:  lbl,
+					linkTarget: dest,
 				})
+				nextLinkIdx++
 				i += linkLen
 				continue
 			}
@@ -450,8 +510,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 					inner = s[i+3 : i+3+end]
 				}
 				spans = append(spans, styledToken{
-					text:  inner,
-					style: baseStyle + ansiUnderline,
+					text:    inner,
+					style:   baseStyle + ansiUnderline,
+					linkIdx: -1,
 				})
 				i += 3 + end + 4
 				continue
@@ -470,8 +531,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 					inner = s[i+3 : i+3+end]
 				}
 				spans = append(spans, styledToken{
-					text:  inner,
-					style: baseStyle + ansiBold + ansiItalic,
+					text:    inner,
+					style:   baseStyle + ansiBold + ansiItalic,
+					linkIdx: -1,
 				})
 				i += 3 + end + 3
 				continue
@@ -490,8 +552,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 					inner = s[i+2 : i+2+end]
 				}
 				spans = append(spans, styledToken{
-					text:  inner,
-					style: baseStyle + ansiBold,
+					text:    inner,
+					style:   baseStyle + ansiBold,
+					linkIdx: -1,
 				})
 				i += 2 + end + 2
 				continue
@@ -509,8 +572,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 					inner = s[i+2 : i+2+end]
 				}
 				spans = append(spans, styledToken{
-					text:  inner,
-					style: baseStyle + ansiStrike,
+					text:    inner,
+					style:   baseStyle + ansiStrike,
+					linkIdx: -1,
 				})
 				i += 2 + end + 2
 				continue
@@ -531,8 +595,9 @@ func parseInlineTokens(s string, lineBg, baseFg string, showSyntax bool) []style
 						text = rawInner
 					}
 					spans = append(spans, styledToken{
-						text:  text,
-						style: baseStyle + ansiItalic,
+						text:    text,
+						style:   baseStyle + ansiItalic,
+						linkIdx: -1,
 					})
 					i += 1 + end + 1
 					continue
@@ -606,6 +671,53 @@ func matchMarkdownLink(s string) int {
 	return pos
 }
 
+// parseMarkdownLinkParts extracts the label and destination URL/path from a matched Markdown link
+// such as `[label](url "optional title")` or `![alt](<url>)`.
+func parseMarkdownLinkParts(rawLink string) (string, string) {
+	pos := 0
+	if strings.HasPrefix(rawLink, "![") {
+		pos = 2
+	} else if strings.HasPrefix(rawLink, "[") {
+		pos = 1
+	} else {
+		return "", ""
+	}
+	labelStart := pos
+	bracketDepth := 1
+	for pos < len(rawLink) && bracketDepth > 0 {
+		if rawLink[pos] == '\\' && pos+1 < len(rawLink) {
+			pos += 2
+			continue
+		}
+		if rawLink[pos] == '[' {
+			bracketDepth++
+		} else if rawLink[pos] == ']' {
+			bracketDepth--
+		}
+		pos++
+	}
+	if bracketDepth != 0 || pos >= len(rawLink) || rawLink[pos] != '(' {
+		return "", ""
+	}
+	label := rawLink[labelStart : pos-1]
+	destSpec := strings.TrimSpace(rawLink[pos+1 : len(rawLink)-1])
+	if destSpec == "" {
+		return label, ""
+	}
+	if strings.HasPrefix(destSpec, "<") {
+		if end := strings.IndexByte(destSpec, '>'); end > 0 {
+			return label, destSpec[1:end]
+		}
+	}
+	// Strip optional title `"title"` or `'title'` after whitespace
+	for i := 0; i < len(destSpec); i++ {
+		if destSpec[i] == ' ' || destSpec[i] == '\t' {
+			return label, strings.TrimSpace(destSpec[:i])
+		}
+	}
+	return label, destSpec
+}
+
 // stripInlineMarkdown removes basic inline formatting markers for clean sidebar display.
 func stripInlineMarkdown(s string) string {
 	s, _, _ = stripHTMLCommentsFromLine(s, false)
@@ -621,6 +733,7 @@ type wrapUnit struct {
 	style   string
 	width   int
 	isSpace bool
+	linkIdx int
 }
 
 // splitIntoWrapUnits breaks styled tokens into word/CJK wrapping units so English words
@@ -633,9 +746,10 @@ func splitIntoWrapUnits(tokens []styledToken) []wrapUnit {
 		flushWord := func() {
 			if wordBuf.Len() > 0 {
 				units = append(units, wrapUnit{
-					text:  wordBuf.String(),
-					style: tok.style,
-					width: wordWidth,
+					text:    wordBuf.String(),
+					style:   tok.style,
+					width:   wordWidth,
+					linkIdx: tok.linkIdx,
 				})
 				wordBuf.Reset()
 				wordWidth = 0
@@ -651,14 +765,16 @@ func splitIntoWrapUnits(tokens []styledToken) []wrapUnit {
 					style:   tok.style,
 					width:   1,
 					isSpace: true,
+					linkIdx: tok.linkIdx,
 				})
 			} else if rw > 1 || isCJKPunct(r) {
 				// Wide CJK rune or full-width punctuation can break before/after
 				flushWord()
 				units = append(units, wrapUnit{
-					text:  string(r),
-					style: tok.style,
-					width: rw,
+					text:    string(r),
+					style:   tok.style,
+					width:   rw,
+					linkIdx: tok.linkIdx,
 				})
 			} else {
 				wordBuf.WriteRune(r)
@@ -676,11 +792,39 @@ func isCJKPunct(r rune) bool {
 
 // wrapStyledTokens wraps styled tokens into lines of at most maxWidth display columns.
 func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefix, lineBg, baseFg string) []string {
+	lines, _ := wrapStyledTokensWithLinks(tokens, maxWidth, firstPrefix, contPrefix, lineBg, baseFg, 0)
+	return lines
+}
+
+// wrapStyledTokensWithLinks wraps styled tokens and records SelectableItem spans for any Markdown links.
+// Note: inline lines rendered into the main reader receive a 1-space left margin (`" "+wl`),
+// so recorded column spans are offset by +1 to match final rendered line columns.
+func wrapStyledTokensWithLinks(tokens []styledToken, maxWidth int, firstPrefix, contPrefix, lineBg, baseFg string, baseRenderLine int) ([]string, []SelectableItem) {
 	if maxWidth < 4 {
 		maxWidth = 4
 	}
 	units := splitIntoWrapUnits(tokens)
 	baseStyle := ansiReset + lineBg + baseFg
+
+	// Build link metadata lookup by linkIdx
+	type linkMeta struct {
+		label  string
+		target string
+		spans  []SelectableSpan
+	}
+	linkMap := make(map[int]*linkMeta)
+	var linkOrder []int
+	for _, tok := range tokens {
+		if tok.linkIdx >= 0 {
+			if _, exists := linkMap[tok.linkIdx]; !exists {
+				linkMap[tok.linkIdx] = &linkMeta{
+					label:  tok.linkLabel,
+					target: tok.linkTarget,
+				}
+				linkOrder = append(linkOrder, tok.linkIdx)
+			}
+		}
+	}
 
 	prefix := firstPrefix
 	prefixW := visibleWidth(prefix)
@@ -697,12 +841,36 @@ func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefi
 	hasContentOnLine := false
 	activeStyle := ""
 
-	writeStyled := func(style, text string) {
+	recordLinkCols := func(linkIdx int, startCol, endCol int) {
+		if linkIdx < 0 || endCol <= startCol {
+			return
+		}
+		meta := linkMap[linkIdx]
+		if meta == nil {
+			return
+		}
+		renderLine := baseRenderLine + len(lines)
+		// +1 for the leading 1-column margin added by styleLine(" "+wl, ...)
+		sCol := startCol + 1
+		eCol := endCol + 1
+		if n := len(meta.spans); n > 0 && meta.spans[n-1].RenderLine == renderLine && meta.spans[n-1].EndCol == sCol {
+			meta.spans[n-1].EndCol = eCol
+		} else {
+			meta.spans = append(meta.spans, SelectableSpan{
+				RenderLine: renderLine,
+				StartCol:   sCol,
+				EndCol:     eCol,
+			})
+		}
+	}
+
+	writeStyled := func(style, text string, linkIdx int, width int) {
 		if style != activeStyle {
 			curLine.WriteString(style)
 			activeStyle = style
 		}
 		curLine.WriteString(text)
+		recordLinkCols(linkIdx, curW, curW+width)
 	}
 
 	startNewLine := func() {
@@ -728,7 +896,7 @@ func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefi
 		}
 
 		if curW+u.width <= maxWidth {
-			writeStyled(u.style, u.text)
+			writeStyled(u.style, u.text, u.linkIdx, u.width)
 			curW += u.width
 			if !u.isSpace {
 				hasContentOnLine = true
@@ -746,7 +914,7 @@ func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefi
 			if u.isSpace {
 				continue
 			}
-			writeStyled(u.style, u.text)
+			writeStyled(u.style, u.text, u.linkIdx, u.width)
 			curW += u.width
 			hasContentOnLine = true
 			continue
@@ -758,14 +926,31 @@ func wrapStyledTokens(tokens []styledToken, maxWidth int, firstPrefix, contPrefi
 			if curW+rw > maxWidth && curW > 0 {
 				startNewLine()
 			}
-			writeStyled(u.style, string(r))
+			writeStyled(u.style, string(r), u.linkIdx, rw)
 			curW += rw
 			hasContentOnLine = true
 		}
 	}
 
 	lines = append(lines, curLine.String()+baseStyle)
-	return lines
+
+	var items []SelectableItem
+	for _, idx := range linkOrder {
+		meta := linkMap[idx]
+		if meta == nil || len(meta.spans) == 0 {
+			continue
+		}
+		items = append(items, SelectableItem{
+			Kind:       SelectableLink,
+			StartLine:  meta.spans[0].RenderLine,
+			EndLine:    meta.spans[len(meta.spans)-1].RenderLine,
+			Spans:      meta.spans,
+			LinkLabel:  meta.label,
+			LinkTarget: meta.target,
+			TableIndex: -1,
+		})
+	}
+	return lines, items
 }
 
 // wrapPlainLine wraps an unstyled line (such as a code block line) to maxWidth display columns.

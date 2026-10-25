@@ -781,3 +781,192 @@ func TestRelativeHeaderIndentation(t *testing.T) {
 		t.Errorf("expected H3 sidebar row to have 1 relative indentation, got: %q", sbRow1)
 	}
 }
+
+func TestMarkdownTableRenderingAndMobileCropping(t *testing.T) {
+	src := strings.Join([]string{
+		"# Character Table",
+		"",
+		"| Character | Role | Status | Location | Notes |",
+		"| :--- | :---: | ---: | :--- | :--- |",
+		"| 孔乙己 | Scholar | Active | 魯鎮咸亨酒店 | [Profile](chapter-2.md) |",
+		"| 掌櫃 | Shopkeeper | Active | 酒店大櫃檯 | Controls the tavern |",
+	}, "\n")
+
+	// 1. Wide screen (100 columns): fits without cropping
+	docWide := RenderMarkdown(src, 100, false)
+	if len(docWide.Tables) != 1 {
+		t.Fatalf("expected 1 parsed table, got %d", len(docWide.Tables))
+	}
+	tblWide := docWide.Tables[0]
+	if tblWide.IsCropped {
+		t.Errorf("expected table not to be cropped at width 100")
+	}
+	if len(tblWide.Headers) != 5 || len(tblWide.Rows) != 2 {
+		t.Fatalf("expected 5 columns and 2 rows, got %d cols × %d rows", len(tblWide.Headers), len(tblWide.Rows))
+	}
+	if tblWide.Alignments[0] != AlignLeft || tblWide.Alignments[1] != AlignCenter || tblWide.Alignments[2] != AlignRight {
+		t.Errorf("unexpected column alignments: %+v", tblWide.Alignments)
+	}
+	for i, line := range docWide.Lines {
+		if vw := visibleWidth(line); vw != 100 {
+			t.Errorf("wide line %d visibleWidth = %d, want 100", i, vw)
+		}
+	}
+
+	// 2. Narrow mobile screen (36 columns): cells wrap cleanly and wide columns are cropped with '▸'
+	docNarrow := RenderMarkdown(src, 36, false)
+	if len(docNarrow.Tables) != 1 {
+		t.Fatalf("expected 1 parsed table on narrow width, got %d", len(docNarrow.Tables))
+	}
+	tblNarrow := docNarrow.Tables[0]
+	if !tblNarrow.IsCropped {
+		t.Errorf("expected wide 5-column table to be marked IsCropped at width 36")
+	}
+	foundCropMarker := false
+	for i := tblNarrow.StartRenderLine; i <= tblNarrow.EndRenderLine; i++ {
+		line := docNarrow.Lines[i]
+		if vw := visibleWidth(line); vw != 36 {
+			t.Errorf("narrow table line %d visibleWidth = %d, want 36", i, vw)
+		}
+		if strings.Contains(line, "▸") {
+			foundCropMarker = true
+		}
+	}
+	if !foundCropMarker {
+		t.Errorf("expected cropped narrow table lines to display right-edge '▸' indicator")
+	}
+}
+
+func TestSelectionModeAndInteractiveTableViewer(t *testing.T) {
+	tmp := t.TempDir()
+	ch1Path := filepath.Join(tmp, "chapter-1.md")
+	ch2Path := filepath.Join(tmp, "chapter-2.md")
+	notePath := filepath.Join(tmp, "notes.txt")
+	binPath := filepath.Join(tmp, "image.bin")
+
+	ch1Content := strings.Join([]string{
+		"# Chapter 1",
+		"",
+		"Read [Chapter 2](chapter-2.md) or edit [Notes](notes.txt) or open [Binary](image.bin).",
+		"",
+		"| Item | Target | Description |",
+		"| :--- | :--- | :--- |",
+		"| First | [Go Ch2](chapter-2.md) | Link inside table cell |",
+		"| Second | Plain cell | Normal cell text |",
+	}, "\n")
+	_ = os.WriteFile(ch1Path, []byte(ch1Content), 0o644)
+	_ = os.WriteFile(ch2Path, []byte("# Chapter 2\n\nWelcome to chapter 2."), 0o644)
+	_ = os.WriteFile(notePath, []byte("Plain text notes"), 0o644)
+	_ = os.WriteFile(binPath, []byte{0x00, 0x01, 0x02, 0xff}, 0o644)
+
+	app, err := NewAppModel(ch1Path)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Expect 4 selectable items in Chapter 1: 3 links + 1 table
+	if len(app.Reader.Rendered.Selectables) != 4 {
+		t.Fatalf("expected 4 selectable items (3 links + 1 table), got %d", len(app.Reader.Rendered.Selectables))
+	}
+
+	// 1. Toggle Selection Mode on with 's'
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if !app.Reader.SelectionMode {
+		t.Fatalf("expected SelectionMode to be true after pressing 's'")
+	}
+	if app.Reader.SelectedIdx != 0 {
+		t.Fatalf("expected first selectable item (index 0) to be focused, got %d", app.Reader.SelectedIdx)
+	}
+	if !strings.Contains(app.View(), "[SELECT 1/4]") {
+		t.Errorf("expected top bar to show [SELECT 1/4] badge in Selection Mode")
+	}
+
+	// 2. Press Enter on the first link (`[Chapter 2](chapter-2.md)`) -> should open chapter-2.md in treemouse
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.Reader.FilePath != ch2Path {
+		t.Fatalf("expected Reader to navigate to %s, got %s", ch2Path, app.Reader.FilePath)
+	}
+	if len(app.Reader.History) != 1 {
+		t.Fatalf("expected 1 entry in Reader back-history stack, got %d", len(app.Reader.History))
+	}
+
+	// 3. Press Esc in chapter-2.md -> should pop back to chapter-1.md (with SelectionMode restored)
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.Mode != ModeReader || app.Reader.FilePath != ch1Path {
+		t.Fatalf("expected Esc to pop Reader history back to %s, got mode=%v path=%s", ch1Path, app.Mode, app.Reader.FilePath)
+	}
+	if !app.Reader.SelectionMode {
+		t.Errorf("expected SelectionMode to be restored from history")
+	}
+
+	// 4. Move right/down to the second link (`[Notes](notes.txt)`) and press Enter -> should return openEditorCmd
+	app.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if app.Reader.SelectedIdx != 1 {
+		t.Fatalf("expected SelectedIdx=1, got %d", app.Reader.SelectedIdx)
+	}
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Errorf("expected pressing Enter on a text file link (notes.txt) to return $EDITOR tea.Cmd")
+	}
+
+	// 5. Move to the third link (`[Binary](image.bin)`) and press Enter with empty PATH (no xdg-open) -> Unsupported popup
+	origPath := os.Getenv("PATH")
+	_ = os.Setenv("PATH", "")
+	defer func() { _ = os.Setenv("PATH", origPath) }()
+
+	app.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if app.Reader.SelectedIdx != 2 {
+		t.Fatalf("expected SelectedIdx=2, got %d", app.Reader.SelectedIdx)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.UnsupportedMsg == "" {
+		t.Errorf("expected UnsupportedMsg popup when opening binary file without xdg-open")
+	}
+	if !strings.Contains(app.View(), "Unsupported Filetype") {
+		t.Errorf("expected View() to render Unsupported Filetype popup")
+	}
+	// Dismiss popup with Esc
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.UnsupportedMsg != "" {
+		t.Errorf("expected Esc to dismiss Unsupported Filetype popup")
+	}
+
+	// 6. Move to the 4th item (the Table) and press Enter -> should enter ModeTableViewer
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if app.Reader.SelectedIdx != 3 {
+		t.Fatalf("expected SelectedIdx=3 (table), got %d", app.Reader.SelectedIdx)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.Mode != ModeTableViewer || app.TableViewer == nil {
+		t.Fatalf("expected Enter on table to open ModeTableViewer, got mode=%v", app.Mode)
+	}
+	tvView := app.View()
+	if !strings.Contains(tvView, "Table Viewer") {
+		t.Errorf("expected Table Viewer header in View()")
+	}
+
+	// Pressing Enter on a non-link cell (Column 0: "First") opens the scrollable Cell Detail Popup
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !app.TableViewer.ShowCellPopup {
+		t.Fatalf("expected Enter on non-link cell to open ShowCellPopup")
+	}
+	if !strings.Contains(app.View(), "Row 1 — Item") || !strings.Contains(app.View(), "First") {
+		t.Errorf("expected Cell Detail Popup to show column title and full cell content")
+	}
+	// Pressing Esc closes the Cell Detail Popup and stays in ModeTableViewer
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.TableViewer.ShowCellPopup || app.Mode != ModeTableViewer {
+		t.Fatalf("expected Esc to close Cell Detail Popup and remain in ModeTableViewer")
+	}
+
+	// Navigate right to Column 1 (`[Go Ch2](chapter-2.md)`) and press Enter inside Table Viewer -> opens chapter-2.md
+	app.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if app.TableViewer.CursorCol != 1 {
+		t.Fatalf("expected TableViewer CursorCol=1, got %d", app.TableViewer.CursorCol)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.Mode != ModeReader || app.Reader.FilePath != ch2Path {
+		t.Fatalf("expected Enter on link cell inside TableViewer to open %s in ModeReader, got mode=%v path=%s", ch2Path, app.Mode, app.Reader.FilePath)
+	}
+}

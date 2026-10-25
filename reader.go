@@ -12,6 +12,14 @@ import (
 // and expands as a full-screen mobile overlay.
 const ResponsiveBreakpoint = 80
 
+// ReaderHistoryEntry stores a previous document and scroll offset when following links.
+type ReaderHistoryEntry struct {
+	FilePath       string
+	Scroll         int
+	SelectionMode  bool
+	SelectedIdx    int
+}
+
 // ReaderState manages the Markdown Reader view and its Header Sidebar.
 type ReaderState struct {
 	FilePath       string
@@ -31,6 +39,10 @@ type ReaderState struct {
 	HeaderCursor   int
 	HeaderScroll   int
 	IsNarrow       bool
+	SelectionMode  bool // When true, up/down/left/right navigates links and tables
+	SelectedIdx    int  // Index into Rendered.Selectables
+	StatusMsg      string
+	History        []ReaderHistoryEntry
 }
 
 // NewReaderState loads a Markdown file and initializes the ReaderState for the given screen dimensions.
@@ -230,6 +242,12 @@ func (r *ReaderState) Reflow(totalWidth, totalHeight int) {
 		if len(r.Rendered.Lines) > 1 {
 			r.Scroll = int(ratio * float64(len(r.Rendered.Lines)-1))
 		}
+		if len(r.Rendered.Selectables) == 0 {
+			r.SelectionMode = false
+			r.SelectedIdx = 0
+		} else if r.SelectedIdx >= len(r.Rendered.Selectables) {
+			r.SelectedIdx = len(r.Rendered.Selectables) - 1
+		}
 	}
 	bodyHeight := totalHeight - 2
 	if bodyHeight < 1 {
@@ -275,6 +293,253 @@ func (r *ReaderState) ScrollToBottom(bodyHeight int) {
 	if !r.SidebarFocused {
 		r.syncHeaderCursorToScroll()
 	}
+}
+
+// ToggleSelectionMode toggles Selection Mode on/off in the Reader.
+// When entering Selection Mode, it focuses the first selectable item visible in the viewport
+// (or the nearest selectable item in the document, auto-scrolling to it).
+func (r *ReaderState) ToggleSelectionMode(bodyHeight int) {
+	if r.SelectionMode {
+		r.SelectionMode = false
+		r.StatusMsg = ""
+		return
+	}
+	if len(r.Rendered.Selectables) == 0 {
+		r.SelectionMode = false
+		r.StatusMsg = "No selectable links or tables in this document"
+		return
+	}
+	r.SelectionMode = true
+	r.StatusMsg = ""
+
+	ctxLen := len(r.ActiveContextHeaders(bodyHeight))
+	visStart := r.Scroll + ctxLen
+	visEnd := r.Scroll + bodyHeight - 1
+
+	// 1. Prefer the first selectable item currently visible in the viewport
+	chosen := -1
+	for i, item := range r.Rendered.Selectables {
+		if item.EndLine >= visStart && item.StartLine <= visEnd {
+			chosen = i
+			break
+		}
+	}
+	// 2. Otherwise pick the closest selectable item to visStart
+	if chosen < 0 {
+		bestDist := 1 << 30
+		for i, item := range r.Rendered.Selectables {
+			dist := item.StartLine - visStart
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist < bestDist {
+				bestDist = dist
+				chosen = i
+			}
+		}
+	}
+	if chosen < 0 {
+		chosen = 0
+	}
+	r.SelectedIdx = chosen
+	r.ensureSelectedVisible(bodyHeight)
+}
+
+// MoveSelection moves focus to the previous/next selectable item in Selection Mode.
+func (r *ReaderState) MoveSelection(delta int, bodyHeight int) {
+	if len(r.Rendered.Selectables) == 0 {
+		r.SelectionMode = false
+		return
+	}
+	r.SelectedIdx += delta
+	if r.SelectedIdx < 0 {
+		r.SelectedIdx = 0
+	}
+	if r.SelectedIdx >= len(r.Rendered.Selectables) {
+		r.SelectedIdx = len(r.Rendered.Selectables) - 1
+	}
+	r.ensureSelectedVisible(bodyHeight)
+}
+
+// CurrentSelectable returns the currently focused SelectableItem if Selection Mode is active.
+func (r *ReaderState) CurrentSelectable() (SelectableItem, bool) {
+	if !r.SelectionMode || r.SelectedIdx < 0 || r.SelectedIdx >= len(r.Rendered.Selectables) {
+		return SelectableItem{}, false
+	}
+	return r.Rendered.Selectables[r.SelectedIdx], true
+}
+
+func (r *ReaderState) ensureSelectedVisible(bodyHeight int) {
+	item, ok := r.CurrentSelectable()
+	if !ok {
+		return
+	}
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	ctxLen := len(r.ActiveContextHeaders(bodyHeight))
+	visStart := r.Scroll + ctxLen
+	visEnd := r.Scroll + bodyHeight - 1
+
+	if item.StartLine < visStart {
+		r.Scroll = item.StartLine - ctxLen
+		if r.Scroll < 0 {
+			r.Scroll = 0
+		}
+		// Recompute sticky header height at new scroll position so item is not hidden underneath sticky headers
+		newCtxLen := len(r.ActiveContextHeaders(bodyHeight))
+		if item.StartLine < r.Scroll+newCtxLen {
+			r.Scroll = item.StartLine - newCtxLen
+		}
+	} else if item.EndLine > visEnd {
+		itemHeight := item.EndLine - item.StartLine + 1
+		avail := bodyHeight - ctxLen
+		if avail < 1 {
+			avail = 1
+		}
+		if itemHeight > avail {
+			// Tall table: align its top just below sticky headers
+			r.Scroll = item.StartLine - ctxLen
+		} else {
+			r.Scroll = item.EndLine - bodyHeight + 1
+		}
+	}
+	r.clampScroll(bodyHeight)
+	if !r.SidebarFocused {
+		r.syncHeaderCursorToScroll()
+	}
+}
+
+// JumpToAnchor scrolls the reader to the header matching the given anchor slug or title.
+func (r *ReaderState) JumpToAnchor(anchor string, bodyHeight int) bool {
+	slug := normalizeHeadingSlug(anchor)
+	if slug == "" {
+		return false
+	}
+	for i, h := range r.Rendered.Headers {
+		if normalizeHeadingSlug(h.Title) == slug || strings.EqualFold(strings.TrimSpace(h.Title), strings.TrimSpace(anchor)) {
+			r.HeaderCursor = i
+			r.Scroll = h.RenderLine
+			r.clampScroll(bodyHeight)
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeHeadingSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, "#")))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		if r == ' ' || r == '-' || r == '_' {
+			if !lastDash && b.Len() > 0 {
+				b.WriteRune('-')
+				lastDash = true
+			}
+			continue
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r > 127 {
+			b.WriteRune(r)
+			lastDash = false
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
+}
+
+// NavigateToFile loads a new Markdown file in the same ReaderState while pushing the current
+// file and scroll offset onto the Reader back-history stack.
+func (r *ReaderState) NavigateToFile(targetPath string, baseDir string, anchor string, width, height int) error {
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(absTarget)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(absTarget)
+	if err != nil {
+		return err
+	}
+
+	// Push current document state onto history
+	r.History = append(r.History, ReaderHistoryEntry{
+		FilePath:      r.FilePath,
+		Scroll:        r.Scroll,
+		SelectionMode: r.SelectionMode,
+		SelectedIdx:   r.SelectedIdx,
+	})
+
+	disp := filepath.Base(absTarget)
+	if baseDir != "" {
+		if rel, err := filepath.Rel(baseDir, absTarget); err == nil && !strings.HasPrefix(rel, "..") {
+			disp = rel
+		}
+	}
+
+	r.FilePath = absTarget
+	r.DisplayPath = disp
+	r.RawContent = string(data)
+	r.LastModTime = info.ModTime()
+	r.LastSize = info.Size()
+	r.FileModified = false
+	r.Scroll = 0
+	r.SelectionMode = false
+	r.SelectedIdx = 0
+	r.StatusMsg = ""
+	r.LastRenderW = 0
+	r.Reflow(width, height)
+	if anchor != "" {
+		r.JumpToAnchor(anchor, height-2)
+	}
+	r.syncHeaderCursorToScroll()
+	return nil
+}
+
+// PopHistory pops the most recent ReaderHistoryEntry and restores that document and scroll position.
+// Returns true if a history entry was popped, or false if the history stack is empty.
+func (r *ReaderState) PopHistory(baseDir string, width, height int) bool {
+	if len(r.History) == 0 {
+		return false
+	}
+	last := r.History[len(r.History)-1]
+	r.History = r.History[:len(r.History)-1]
+
+	info, err := os.Stat(last.FilePath)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(last.FilePath)
+	if err != nil {
+		return false
+	}
+
+	disp := filepath.Base(last.FilePath)
+	if baseDir != "" {
+		if rel, err := filepath.Rel(baseDir, last.FilePath); err == nil && !strings.HasPrefix(rel, "..") {
+			disp = rel
+		}
+	}
+
+	r.FilePath = last.FilePath
+	r.DisplayPath = disp
+	r.RawContent = string(data)
+	r.LastModTime = info.ModTime()
+	r.LastSize = info.Size()
+	r.FileModified = false
+	r.LastRenderW = 0
+	r.Reflow(width, height)
+	r.Scroll = last.Scroll
+	r.SelectionMode = last.SelectionMode
+	r.SelectedIdx = last.SelectedIdx
+	if r.SelectedIdx >= len(r.Rendered.Selectables) {
+		r.SelectedIdx = maxInt(0, len(r.Rendered.Selectables)-1)
+	}
+	r.StatusMsg = ""
+	r.clampScroll(height - 2)
+	r.syncHeaderCursorToScroll()
+	return true
 }
 
 // MoveHeaderCursor moves the selection cursor inside the Header Sidebar.
@@ -441,6 +706,9 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	if r.AutoReload {
 		badges.WriteString("Auto Reload ")
 	}
+	if r.SelectionMode {
+		badges.WriteString(fmt.Sprintf("[SELECT %d/%d] ", r.SelectedIdx+1, len(r.Rendered.Selectables)))
+	}
 	if r.ShowSyntax {
 		badges.WriteString("[SYNTAX] ")
 	}
@@ -466,6 +734,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 
 	// 2. Body Rows (with sticky contextual headers pinned at the top of the reader pane)
 	ctxHeaders := r.ActiveContextHeaders(bodyHeight)
+	activeItem, hasActiveItem := r.CurrentSelectable()
 	for row := 0; row < bodyHeight; row++ {
 		var mainLine string
 		if row < len(ctxHeaders) {
@@ -474,6 +743,9 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 			docIdx := r.Scroll + row
 			if docIdx < len(r.Rendered.Lines) {
 				mainLine = r.Rendered.Lines[docIdx]
+				if hasActiveItem && docIdx >= activeItem.StartLine && docIdx <= activeItem.EndLine {
+					mainLine = r.decorateSelectedLine(mainLine, docIdx, activeItem, mainW)
+				}
 			} else {
 				mainLine = styleLine("", mainW, bgMain, fgDefault)
 			}
@@ -490,11 +762,19 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	// 3. Bottom Footer Bar (only essential features: Open/Jump when applicable, Commands, Quit — without colons,
 	// with the red "r reload" indicator at the right end of the footer bar when modified and AutoReload is off)
 	var footerText string
-	if r.SidebarFocused {
+	if r.StatusMsg != "" {
+		footerText = " " + fgWarn + r.StatusMsg
+	} else if r.SidebarFocused {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
 			HintPair{Key: "/", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
+		)
+	} else if r.SelectionMode {
+		footerText = formatFooterHints(bgBar,
+			HintPair{Key: "Enter", Desc: "Open"},
+			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Exit Select"},
 		)
 	} else {
 		footerText = formatFooterHints(bgBar,
@@ -510,6 +790,33 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	}
 
 	return lines
+}
+
+// decorateSelectedLine highlights the currently focused link or table in Selection Mode.
+func (r *ReaderState) decorateSelectedLine(line string, docIdx int, item SelectableItem, mainW int) string {
+	switch item.Kind {
+	case SelectableLink:
+		highlightStyle := bgSelectFocus + fgBright + ansiBold + ansiUnderline
+		out := line
+		for _, sp := range item.Spans {
+			if sp.RenderLine == docIdx {
+				out = highlightANSIColRange(out, sp.StartCol, sp.EndCol, mainW, highlightStyle)
+			}
+		}
+		return out
+	case SelectableTable:
+		if docIdx == item.StartLine {
+			plain := strings.TrimSpace(stripANSI(line))
+			badge := " [Enter View Table] "
+			return styleBarWithRight(" ▸ "+plain, badge, mainW, bgSelectFocus, fgBright+ansiBold, fgFilterBadge)
+		}
+		plain := stripANSI(line)
+		if strings.HasPrefix(plain, " ") {
+			plain = "▎" + plain[1:]
+		}
+		return styleLine(plain, mainW, bgHighlight, fgBright)
+	}
+	return line
 }
 
 func (r *ReaderState) renderSidebarRow(row int, sw int) string {
