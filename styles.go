@@ -38,7 +38,7 @@ const (
 	fgMuted           = "\x1b[38;5;248m" // Secondary info
 	fgUnsupported     = "\x1b[38;5;240m" // Dimmed color for unsupported file types
 	fgQuote           = "\x1b[38;5;250m" // Blockquote text
-	fgQuoteBar        = "\x1b[38;5;242m" // Blockquote vertical bar & HR
+	fgQuoteBar        = "\x1b[38;5;245m" // Blockquote vertical bar & HR (visible on mobile OLED screens)
 	fgCode            = "\x1b[38;5;216m" // Inline & block code text
 	fgLink            = "\x1b[38;5;75m"  // Markdown link color
 	fgFolder          = "\x1b[1;34m"     // Folder item color

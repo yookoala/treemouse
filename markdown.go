@@ -55,7 +55,7 @@ type RenderedDoc struct {
 
 var (
 	reATXHeader   = regexp.MustCompile(`^(\s{0,3})(#{1,6})\s+(.*)$`)
-	reHR          = regexp.MustCompile(`^\s{0,3}((-\s*){3,}|(\*\s*){3,}|(_\s*){3,})\s*$`)
+	reHR          = regexp.MustCompile(`^[\s\p{Zs}]*((-[\s\p{Zs}]*){3,}|(\*[\s\p{Zs}]*){3,}|(_[\s\p{Zs}]*){3,})[\s\p{Zs}]*$`)
 	reUL          = regexp.MustCompile(`^(\s*)([-*+])\s+(.*)$`)
 	reOL          = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
 	reBlockquote  = regexp.MustCompile(`^(\s{0,3}>)\s?(.*)$`)
@@ -378,18 +378,32 @@ func detectYAMLFrontmatter(rawLines []string) (int, bool) {
 	if strings.TrimSpace(first) != "---" {
 		return 0, false
 	}
-	hasColon := false
+	hasYAMLKey := false
 	for i := 1; i < len(rawLines); i++ {
-		trimmed := strings.TrimSpace(rawLines[i])
+		line := rawLines[i]
+		trimmed := strings.TrimSpace(line)
 		if trimmed == "---" || trimmed == "..." {
-			if hasColon {
+			if hasYAMLKey {
 				return i, true
 			}
 			return 0, false
 		}
-		if strings.Contains(trimmed, ":") {
-			hasColon = true
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			// Markdown ATX heading (`# Title`) inside block means it's not YAML frontmatter
+			if reATXHeader.MatchString(line) {
+				return 0, false
+			}
+			continue
 		}
+		// Valid YAML frontmatter lines are either list items (`- item`) or `key: value` pairs
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			continue
+		}
+		colonIdx := strings.IndexByte(trimmed, ':')
+		if colonIdx <= 0 {
+			return 0, false
+		}
+		hasYAMLKey = true
 	}
 	return 0, false
 }

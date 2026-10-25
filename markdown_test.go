@@ -724,6 +724,27 @@ func TestHorizontalRuleRendering(t *testing.T) {
 			t.Errorf("line %d visibleWidth = %d, want %d", idx, visibleWidth(line), width)
 		}
 	}
+
+	// Ensure a file starting with "---" followed by normal Markdown (not YAML frontmatter) keeps its horizontal rules
+	nonYAML := strings.Join([]string{
+		"---",
+		"",
+		"# Heading: With Colon",
+		"",
+		"---",
+		"",
+		"　　---", // Full-width CJK space indented HR
+	}, "\n")
+	docNonYAML := RenderMarkdown(nonYAML, width, false)
+	hrCount := 0
+	for _, l := range docNonYAML.Lines {
+		if strings.Contains(l, expectedBar) {
+			hrCount++
+		}
+	}
+	if hrCount != 3 {
+		t.Errorf("expected 3 rendered horizontal rules in non-YAML document starting with '---', got %d", hrCount)
+	}
 }
 
 func TestRelativeHeaderIndentation(t *testing.T) {
