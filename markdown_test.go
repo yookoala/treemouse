@@ -970,3 +970,42 @@ func TestSelectionModeAndInteractiveTableViewer(t *testing.T) {
 		t.Fatalf("expected Enter on link cell inside TableViewer to open %s in ModeReader, got mode=%v path=%s", ch2Path, app.Mode, app.Reader.FilePath)
 	}
 }
+
+func TestYAMLFrontmatterHiddenByDefaultAndShownInSyntaxMode(t *testing.T) {
+	src := strings.Join([]string{
+		"---",
+		"title: 狂人日記",
+		"description: Meta header description",
+		"tags:",
+		"  - 小說",
+		"  - 經典",
+		"---",
+		"",
+		"# 狂人日記",
+		"",
+		"Body paragraph here.",
+	}, "\n")
+
+	// 1. Default mode (showSyntax == false): YAML frontmatter and trailing blank line are hidden
+	docClean := RenderMarkdown(src, 80, false)
+	joinedClean := strings.Join(docClean.Lines, "\n")
+	if strings.Contains(joinedClean, "description: Meta header") || strings.Contains(joinedClean, "tags:") {
+		t.Errorf("expected YAML frontmatter to be hidden by default, got:\n%s", joinedClean)
+	}
+	if len(docClean.Lines) != 3 {
+		t.Fatalf("expected 3 rendered lines (H1, empty line, body paragraph), got %d:\n%s", len(docClean.Lines), joinedClean)
+	}
+	if !strings.Contains(docClean.Lines[0], "狂人日記") {
+		t.Errorf("expected first rendered line to be H1 title without leading blank gap, got: %q", docClean.Lines[0])
+	}
+
+	// 2. Syntax mode (showSyntax == true): YAML frontmatter is displayed in dimmed style
+	docSyntax := RenderMarkdown(src, 80, true)
+	joinedSyntax := strings.Join(docSyntax.Lines, "\n")
+	if !strings.Contains(joinedSyntax, "title: 狂人日記") || !strings.Contains(joinedSyntax, "tags:") {
+		t.Errorf("expected YAML frontmatter to be visible when showSyntax is true, got:\n%s", joinedSyntax)
+	}
+	if !strings.Contains(docSyntax.Lines[0], "---") {
+		t.Errorf("expected first line in syntax mode to be '---', got: %q", docSyntax.Lines[0])
+	}
+}

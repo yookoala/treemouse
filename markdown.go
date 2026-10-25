@@ -110,7 +110,30 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 		selectables = append(selectables, linkItems...)
 	}
 
-	for srcIdx := 0; srcIdx < len(rawLines); srcIdx++ {
+	// Detect optional YAML frontmatter / meta header at the very start of the file (`---\n...\n---`).
+	startSrcIdx := 0
+	if fmEndIdx, hasFrontmatter := detectYAMLFrontmatter(rawLines); hasFrontmatter {
+		if displaySyntax {
+			// In syntax/code displaying mode (`m`), render the raw YAML frontmatter lines in dimmed style
+			for i := 0; i <= fmEndIdx; i++ {
+				expanded := strings.ReplaceAll(rawLines[i], "\t", "    ")
+				wrapped := wrapPlainLine(expanded, contentWidth)
+				for _, wl := range wrapped {
+					outLines = append(outLines, styleLine(" "+fgUnsupported+wl, width, bgMain, fgUnsupported))
+				}
+			}
+			startSrcIdx = fmEndIdx + 1
+		} else {
+			// By default, hide the YAML frontmatter and skip any immediately following blank lines
+			// so the document starts cleanly without a leading blank gap.
+			startSrcIdx = fmEndIdx + 1
+			for startSrcIdx < len(rawLines) && strings.TrimSpace(rawLines[startSrcIdx]) == "" {
+				startSrcIdx++
+			}
+		}
+	}
+
+	for srcIdx := startSrcIdx; srcIdx < len(rawLines); srcIdx++ {
 		line := rawLines[srcIdx]
 		// 1. Check fenced code blocks first (comments inside code blocks are literal code)
 		if !inHTMLComment {
@@ -342,6 +365,33 @@ func RenderMarkdown(source string, width int, showSyntax ...bool) RenderedDoc {
 		Tables:      tables,
 		Selectables: selectables,
 	}
+}
+
+// detectYAMLFrontmatter checks if rawLines starts with a YAML frontmatter block (`---` on line 0,
+// followed by key-value metadata lines and closed by `---` or `...`).
+// Returns the 0-based closing line index and true if a valid frontmatter header is present.
+func detectYAMLFrontmatter(rawLines []string) (int, bool) {
+	if len(rawLines) < 3 {
+		return 0, false
+	}
+	first := strings.TrimPrefix(rawLines[0], "\ufeff")
+	if strings.TrimSpace(first) != "---" {
+		return 0, false
+	}
+	hasColon := false
+	for i := 1; i < len(rawLines); i++ {
+		trimmed := strings.TrimSpace(rawLines[i])
+		if trimmed == "---" || trimmed == "..." {
+			if hasColon {
+				return i, true
+			}
+			return 0, false
+		}
+		if strings.Contains(trimmed, ":") {
+			hasColon = true
+		}
+	}
+	return 0, false
 }
 
 // assignRelativeHeaderDepths computes the 0-based relative indentation depth for each header
