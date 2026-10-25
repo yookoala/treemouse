@@ -26,6 +26,20 @@ type TableItem struct {
 	IsCropped       bool
 }
 
+// tableColSpan records the horizontal screen column range [StartX, EndX) for a visible column.
+type tableColSpan struct {
+	Col    int
+	StartX int
+	EndX   int
+}
+
+// tableRowSpan records the vertical screen row range [StartY, EndY] (inclusive) for a visible data row.
+type tableRowSpan struct {
+	Row    int
+	StartY int
+	EndY   int
+}
+
 // TableViewerState manages the full-screen interactive table viewer mode.
 type TableViewerState struct {
 	Table           TableItem
@@ -37,6 +51,8 @@ type TableViewerState struct {
 	DocumentTitle   string
 	ShowCellPopup   bool // True when the full-content Cell Detail popup is open
 	CellPopupScroll int  // Vertical scroll offset inside the Cell Detail popup
+	LastColSpans    []tableColSpan
+	LastRowSpans    []tableRowSpan
 }
 
 // NewTableViewerState creates an interactive viewer state for the given table.
@@ -601,6 +617,19 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 		}
 	}
 
+	// Record horizontal screen column spans [StartX, EndX) for mouse hit-testing
+	tv.LastColSpans = nil
+	curX := 2
+	for c := tv.ColOffset; c <= endCol; c++ {
+		tv.LastColSpans = append(tv.LastColSpans, tableColSpan{
+			Col:    c,
+			StartX: curX,
+			EndX:   curX + colWidths[c],
+		})
+		curX += colWidths[c] + 3
+	}
+	tv.LastRowSpans = nil
+
 	// Top Bar
 	var lines []string
 	colInfo := fmt.Sprintf("[Row %d/%d  Col %d/%d] ", tv.CursorRow+1, maxInt(1, numRows), tv.CursorCol+1, maxInt(1, numCols))
@@ -738,6 +767,7 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 			continue
 		}
 
+		rowStartY := len(lines)
 		for l := 0; l < rowH && usedGridLines < dataRowsAvail; l++ {
 			var rb strings.Builder
 			cursorPrefix := "  "
@@ -763,6 +793,14 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 			}
 			lines = append(lines, styleLine(rb.String(), width, baseRowBg, fgDefault))
 			usedGridLines++
+		}
+		rowEndY := len(lines) - 1
+		if rowEndY >= rowStartY {
+			tv.LastRowSpans = append(tv.LastRowSpans, tableRowSpan{
+				Row:    rIdx,
+				StartY: rowStartY,
+				EndY:   rowEndY,
+			})
 		}
 	}
 
@@ -930,6 +968,36 @@ func (tv *TableViewerState) renderWithCellPopup(baseLines []string, width, heigh
 	popupLines = append(popupLines, styleLine(popupFooter, popupW, bgBar, fgMuted))
 
 	return overlayPopup(baseLines, popupLines, width, popupW, bgMain)
+}
+
+// CellAtScreenPos maps terminal screen coordinates (x, y) in the Table Viewer to (rowIdx, colIdx, true)
+// if the pointer is over a visible data cell.
+func (tv *TableViewerState) CellAtScreenPos(x, y, width, height int) (int, int, bool) {
+	if len(tv.LastRowSpans) == 0 || len(tv.LastColSpans) == 0 {
+		_ = tv.RenderLines(width, height)
+	}
+	hitRow := -1
+	for _, rs := range tv.LastRowSpans {
+		if y >= rs.StartY && y <= rs.EndY {
+			hitRow = rs.Row
+			break
+		}
+	}
+	if hitRow < 0 {
+		return -1, -1, false
+	}
+
+	hitCol := -1
+	for _, cs := range tv.LastColSpans {
+		if x >= cs.StartX-1 && x <= cs.EndX {
+			hitCol = cs.Col
+			break
+		}
+	}
+	if hitCol < 0 {
+		return -1, -1, false
+	}
+	return hitRow, hitCol, true
 }
 
 func maxInt(a, b int) int {

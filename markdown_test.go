@@ -1009,3 +1009,96 @@ func TestYAMLFrontmatterHiddenByDefaultAndShownInSyntaxMode(t *testing.T) {
 		t.Errorf("expected first line in syntax mode to be '---', got: %q", docSyntax.Lines[0])
 	}
 }
+
+func TestMouseScrollHoverAndClickSupport(t *testing.T) {
+	tmp := t.TempDir()
+	aPath := filepath.Join(tmp, "a.md")
+	bPath := filepath.Join(tmp, "b.md")
+
+	var aLines []string
+	aLines = append(aLines, "# Doc A")
+	aLines = append(aLines, "")
+	aLines = append(aLines, "Go to [Doc B](b.md) now.")
+	aLines = append(aLines, "")
+	aLines = append(aLines, "| Col1 | Col2 |")
+	aLines = append(aLines, "| :--- | :--- |")
+	aLines = append(aLines, "| CellA | [LinkB](b.md) |")
+	aLines = append(aLines, "| CellC | PlainD |")
+	for i := 0; i < 30; i++ {
+		aLines = append(aLines, "Line content")
+	}
+
+	_ = os.WriteFile(aPath, []byte(strings.Join(aLines, "\n")), 0o644)
+	_ = os.WriteFile(bPath, []byte("# Doc B\n\nSecond document."), 0o644)
+
+	// Start in File Browser mode
+	app, err := NewAppModel(tmp)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+
+	// 1. File Browser: Hover on row Y=2 (second file entry `b.md`, 0-based index 1) highlights it
+	app.Update(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if app.Browser.Cursor != 1 {
+		t.Fatalf("expected Browser hover at Y=2 to highlight entry index 1, got %d", app.Browser.Cursor)
+	}
+
+	// Mouse down + release on row Y=1 (first file entry `a.md`, index 0) opens `a.md` in Reader
+	app.Update(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if app.Browser.Cursor != 0 {
+		t.Fatalf("expected Browser mouse press at Y=1 to highlight entry index 0, got %d", app.Browser.Cursor)
+	}
+	app.Update(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	if app.Mode != ModeReader || app.Reader == nil || app.Reader.FilePath != aPath {
+		t.Fatalf("expected Browser mouse release at Y=1 to open a.md in ModeReader, got mode=%v", app.Mode)
+	}
+
+	// 2. Markdown Reader: Wheel down scrolls the document down, wheel up scrolls back to top
+	app.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if app.Reader.Scroll <= 0 {
+		t.Errorf("expected MouseButtonWheelDown in Reader to scroll down, got Scroll=%d", app.Reader.Scroll)
+	}
+	app.Update(tea.MouseMsg{X: 10, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	if app.Reader.Scroll != 0 {
+		t.Errorf("expected MouseButtonWheelUp in Reader to scroll back to 0, got Scroll=%d", app.Reader.Scroll)
+	}
+
+	// Hover over the table (rendered around line 4..8, so screen Y = docIdx + 1 = 6) highlights the table
+	tblItem := app.Reader.Rendered.Selectables[1]
+	tableScreenY := tblItem.StartLine + 1
+	app.Update(tea.MouseMsg{X: 5, Y: tableScreenY, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if !app.Reader.SelectionMode || app.Reader.SelectedIdx != 1 {
+		t.Fatalf("expected hovering over table at Y=%d to enable SelectionMode and focus table (idx 1), got mode=%v idx=%d",
+			tableScreenY, app.Reader.SelectionMode, app.Reader.SelectedIdx)
+	}
+
+	// Mouse release on the table opens ModeTableViewer
+	app.Update(tea.MouseMsg{X: 5, Y: tableScreenY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app.Update(tea.MouseMsg{X: 5, Y: tableScreenY, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	if app.Mode != ModeTableViewer || app.TableViewer == nil {
+		t.Fatalf("expected mouse click on table to open ModeTableViewer, got mode=%v", app.Mode)
+	}
+
+	// 3. Table Viewer: Render once to populate cell spans, then hover & click on Row 1, Col 0 ("CellC")
+	_ = app.View()
+	if len(app.TableViewer.LastRowSpans) < 2 || len(app.TableViewer.LastColSpans) < 2 {
+		t.Fatalf("expected TableViewer to record row and col spans, got rows=%d cols=%d",
+			len(app.TableViewer.LastRowSpans), len(app.TableViewer.LastColSpans))
+	}
+	row1Y := app.TableViewer.LastRowSpans[1].StartY
+	col0X := app.TableViewer.LastColSpans[0].StartX + 1
+
+	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if app.TableViewer.CursorRow != 1 || app.TableViewer.CursorCol != 0 {
+		t.Fatalf("expected TableViewer hover to highlight (row=1, col=0), got (%d, %d)",
+			app.TableViewer.CursorRow, app.TableViewer.CursorCol)
+	}
+
+	// Mouse click (press + release) on (row=1, col=0) opens the Cell Detail Popup
+	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	if !app.TableViewer.ShowCellPopup {
+		t.Fatalf("expected clicking non-link cell in TableViewer to open ShowCellPopup")
+	}
+}

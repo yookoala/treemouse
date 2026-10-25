@@ -75,6 +75,10 @@ type AppModel struct {
 	ShowQuitConfirm bool
 	Width           int
 	Height          int
+	MousePressed    bool
+	MouseLastY      int
+	MouseLastX      int
+	MouseDragged    bool
 }
 
 // NewAppModel constructs the application model from an optional CLI path argument.
@@ -276,6 +280,286 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateReader(key)
 		case ModeBrowser:
 			return m.updateBrowser(key)
+		}
+
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
+	}
+	return m, nil
+}
+
+func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	bodyHeight := m.Height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	// Handle modal overlays first
+	if m.ShowQuitConfirm {
+		return m, nil
+	}
+	if m.UnsupportedMsg != "" {
+		if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			m.UnsupportedMsg = ""
+		}
+		return m, nil
+	}
+	if m.ShowHelpManual {
+		if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			m.ShowHelpManual = false
+		}
+		return m, nil
+	}
+	if m.ShowCommandMenu {
+		cmds := m.availableCommands()
+		if msg.Button == tea.MouseButtonWheelUp {
+			if m.CommandCursor > 0 {
+				m.CommandCursor--
+			}
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			if m.CommandCursor < len(cmds)-1 {
+				m.CommandCursor++
+			}
+		}
+		return m, nil
+	}
+
+	switch m.Mode {
+	case ModeBrowser:
+		return m.updateBrowserMouse(msg, bodyHeight)
+	case ModeReader:
+		return m.updateReaderMouse(msg, bodyHeight)
+	case ModeTableViewer:
+		return m.updateTableViewerMouse(msg)
+	}
+	return m, nil
+}
+
+func (m *AppModel) updateBrowserMouse(msg tea.MouseMsg, bodyHeight int) (tea.Model, tea.Cmd) {
+	if m.Browser == nil {
+		return m, nil
+	}
+
+	// 1. Mouse wheel scroll
+	if msg.Button == tea.MouseButtonWheelUp {
+		m.Browser.ScrollBy(-3, bodyHeight)
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelDown {
+		m.Browser.ScrollBy(3, bodyHeight)
+		return m, nil
+	}
+
+	// 2. Drag-to-pan or hover/click in the file list
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
+			m.MousePressed = true
+			m.MouseDragged = false
+			m.MouseLastX = msg.X
+			m.MouseLastY = msg.Y
+			if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.Browser.Cursor = idx
+			}
+		}
+	case tea.MouseActionMotion:
+		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			dy := m.MouseLastY - msg.Y
+			if dy != 0 {
+				m.MouseDragged = true
+				m.Browser.ScrollBy(dy, bodyHeight)
+				m.MouseLastY = msg.Y
+			}
+			return m, nil
+		}
+		if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+			m.Browser.Cursor = idx
+		}
+	case tea.MouseActionRelease:
+		wasDragged := m.MouseDragged
+		m.MousePressed = false
+		m.MouseDragged = false
+		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			if idx, hit := m.Browser.EntryAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.Browser.Cursor = idx
+				return m.updateBrowser("enter")
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *AppModel) updateReaderMouse(msg tea.MouseMsg, bodyHeight int) (tea.Model, tea.Cmd) {
+	if m.Reader == nil {
+		return m, nil
+	}
+
+	// 1. Mouse wheel scroll
+	if msg.Button == tea.MouseButtonWheelUp {
+		if _, inSidebar := m.Reader.HeaderAtSidebarScreenPos(msg.X, msg.Y, m.Width, m.Height); inSidebar {
+			m.Reader.MoveHeaderCursor(-1, bodyHeight)
+		} else {
+			m.Reader.ScrollBy(-3, bodyHeight)
+		}
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelDown {
+		if _, inSidebar := m.Reader.HeaderAtSidebarScreenPos(msg.X, msg.Y, m.Width, m.Height); inSidebar {
+			m.Reader.MoveHeaderCursor(1, bodyHeight)
+		} else {
+			m.Reader.ScrollBy(3, bodyHeight)
+		}
+		return m, nil
+	}
+
+	// 2. Check if pointer is inside the Header Sidebar
+	if hIdx, inSidebar := m.Reader.HeaderAtSidebarScreenPos(msg.X, msg.Y, m.Width, m.Height); inSidebar {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			m.Reader.HeaderCursor = hIdx
+		case tea.MouseActionPress:
+			if msg.Button == tea.MouseButtonLeft {
+				m.Reader.HeaderCursor = hIdx
+			}
+		case tea.MouseActionRelease:
+			if msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone {
+				m.Reader.HeaderCursor = hIdx
+				m.Reader.JumpToSelectedHeader(bodyHeight)
+			}
+		}
+		return m, nil
+	}
+
+	// 3. Main Reader pane: drag-to-pan, hover/mousedown highlight selectable item, mouseup opens selectable item
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
+			m.MousePressed = true
+			m.MouseDragged = false
+			m.MouseLastX = msg.X
+			m.MouseLastY = msg.Y
+			if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.Reader.SelectionMode = true
+				m.Reader.SelectedIdx = selIdx
+			}
+		}
+	case tea.MouseActionMotion:
+		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			dy := m.MouseLastY - msg.Y
+			if dy != 0 {
+				m.MouseDragged = true
+				m.Reader.ScrollBy(dy, bodyHeight)
+				m.MouseLastY = msg.Y
+			}
+			return m, nil
+		}
+		if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+			m.Reader.SelectionMode = true
+			m.Reader.SelectedIdx = selIdx
+		}
+	case tea.MouseActionRelease:
+		wasDragged := m.MouseDragged
+		m.MousePressed = false
+		m.MouseDragged = false
+		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.Reader.SelectionMode = true
+				m.Reader.SelectedIdx = selIdx
+				return m.activateSelectedItem()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *AppModel) updateTableViewerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.TableViewer == nil || m.Reader == nil {
+		return m, nil
+	}
+
+	// When the scrollable Cell Detail Popup is open:
+	if m.TableViewer.ShowCellPopup {
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.TableViewer.ScrollCellPopup(-2, m.Width, m.Height)
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.TableViewer.ScrollCellPopup(2, m.Width, m.Height)
+		} else if msg.Action == tea.MouseActionRelease && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			if _, dest, ok := m.TableViewer.ActiveCellLink(); ok {
+				m.TableViewer.ShowCellPopup = false
+				m.TableViewer.CellPopupScroll = 0
+				return m.openMarkdownLink(dest)
+			}
+			m.TableViewer.ShowCellPopup = false
+			m.TableViewer.CellPopupScroll = 0
+		}
+		return m, nil
+	}
+
+	// 1. Mouse wheel scroll in Table Viewer
+	if msg.Button == tea.MouseButtonWheelUp {
+		m.TableViewer.MoveRow(-1)
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelDown {
+		m.TableViewer.MoveRow(1)
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelLeft {
+		m.TableViewer.MoveCol(-1)
+		return m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelRight {
+		m.TableViewer.MoveCol(1)
+		return m, nil
+	}
+
+	// 2. Drag-to-pan or hover/click cells in Table Viewer
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button == tea.MouseButtonLeft {
+			m.MousePressed = true
+			m.MouseDragged = false
+			m.MouseLastX = msg.X
+			m.MouseLastY = msg.Y
+			if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.TableViewer.CursorRow = rowIdx
+				m.TableViewer.CursorCol = colIdx
+			}
+		}
+	case tea.MouseActionMotion:
+		if m.MousePressed && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			dy := m.MouseLastY - msg.Y
+			dx := m.MouseLastX - msg.X
+			if dy != 0 {
+				m.MouseDragged = true
+				m.TableViewer.MoveRow(dy)
+				m.MouseLastY = msg.Y
+			}
+			if dx >= 4 || dx <= -4 {
+				m.MouseDragged = true
+				if dx > 0 {
+					m.TableViewer.MoveCol(1)
+				} else {
+					m.TableViewer.MoveCol(-1)
+				}
+				m.MouseLastX = msg.X
+			}
+			return m, nil
+		}
+		if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+			m.TableViewer.CursorRow = rowIdx
+			m.TableViewer.CursorCol = colIdx
+		}
+	case tea.MouseActionRelease:
+		wasDragged := m.MouseDragged
+		m.MousePressed = false
+		m.MouseDragged = false
+		if !wasDragged && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			if rowIdx, colIdx, hit := m.TableViewer.CellAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
+				m.TableViewer.CursorRow = rowIdx
+				m.TableViewer.CursorCol = colIdx
+				return m.updateTableViewer("enter")
+			}
 		}
 	}
 	return m, nil

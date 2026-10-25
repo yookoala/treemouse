@@ -423,6 +423,60 @@ func (b *BrowserState) Selected() (FileEntry, bool) {
 	return FileEntry{}, false
 }
 
+// EntryAtScreenPos maps terminal screen coordinates (x, y) to an entry index in b.Entries.
+func (b *BrowserState) EntryAtScreenPos(x, y, totalWidth, totalHeight int) (int, bool) {
+	bodyHeight := totalHeight - 2
+	if y < 1 || y > bodyHeight {
+		return -1, false
+	}
+	if b.IsNarrow && b.SidebarOpen {
+		return -1, false
+	}
+	sw := b.sidebarWidth(totalWidth)
+	mainW := totalWidth - sw
+	if x < 0 || x >= mainW {
+		return -1, false
+	}
+	idx := b.Scroll + (y - 1)
+	if idx < 0 || idx >= len(b.Entries) {
+		return -1, false
+	}
+	return idx, true
+}
+
+// ScrollBy pans the File Browser viewport by delta rows while keeping Cursor within the visible window.
+func (b *BrowserState) ScrollBy(delta int, viewHeight int) {
+	if len(b.Entries) == 0 {
+		return
+	}
+	if viewHeight < 1 {
+		viewHeight = 1
+	}
+	maxScroll := len(b.Entries) - viewHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	b.Scroll += delta
+	if b.Scroll < 0 {
+		b.Scroll = 0
+	}
+	if b.Scroll > maxScroll {
+		b.Scroll = maxScroll
+	}
+	if b.Cursor < b.Scroll {
+		b.Cursor = b.Scroll
+	}
+	if b.Cursor >= b.Scroll+viewHeight {
+		b.Cursor = b.Scroll + viewHeight - 1
+	}
+	if b.Cursor >= len(b.Entries) {
+		b.Cursor = len(b.Entries) - 1
+	}
+	if b.Cursor < 0 {
+		b.Cursor = 0
+	}
+}
+
 // GoParent navigates to the parent directory and highlights the directory just exited,
 // bounded by b.RootDir.
 func (b *BrowserState) GoParent() error {

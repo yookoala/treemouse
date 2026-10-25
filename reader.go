@@ -369,6 +369,75 @@ func (r *ReaderState) CurrentSelectable() (SelectableItem, bool) {
 	return r.Rendered.Selectables[r.SelectedIdx], true
 }
 
+// SelectableAtScreenPos checks whether screen coordinates (x, y) in the Reader viewport hit a
+// selectable link or table. Returns the index into r.Rendered.Selectables and true if hit.
+func (r *ReaderState) SelectableAtScreenPos(x, y, totalWidth, totalHeight int) (int, bool) {
+	bodyHeight := totalHeight - 2
+	if y < 1 || y > bodyHeight {
+		return -1, false
+	}
+	if r.IsNarrow && r.SidebarOpen {
+		return -1, false
+	}
+	sw := r.sidebarWidth(totalWidth)
+	mainW := totalWidth - sw
+	if x < 0 || x >= mainW {
+		return -1, false
+	}
+
+	row := y - 1
+	ctxHeaders := r.ActiveContextHeaders(bodyHeight)
+	if row < len(ctxHeaders) {
+		return -1, false
+	}
+
+	docIdx := r.Scroll + row
+	if docIdx < 0 || docIdx >= len(r.Rendered.Lines) {
+		return -1, false
+	}
+
+	for i, item := range r.Rendered.Selectables {
+		if docIdx < item.StartLine || docIdx > item.EndLine {
+			continue
+		}
+		switch item.Kind {
+		case SelectableLink:
+			for _, sp := range item.Spans {
+				if sp.RenderLine == docIdx && x >= sp.StartCol && x < sp.EndCol {
+					return i, true
+				}
+			}
+		case SelectableTable:
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// HeaderAtSidebarScreenPos checks whether screen coordinates (x, y) hit a header row inside
+// the Reader's right-hand Header Sidebar (or full-screen narrow overlay).
+func (r *ReaderState) HeaderAtSidebarScreenPos(x, y, totalWidth, totalHeight int) (int, bool) {
+	bodyHeight := totalHeight - 2
+	if y < 1 || y > bodyHeight || len(r.Rendered.Headers) == 0 {
+		return -1, false
+	}
+	if r.IsNarrow {
+		if !r.SidebarOpen {
+			return -1, false
+		}
+	} else {
+		sw := r.sidebarWidth(totalWidth)
+		if sw <= 0 || x < totalWidth-sw {
+			return -1, false
+		}
+	}
+	hIdx := r.HeaderScroll + (y - 1)
+	if hIdx < 0 || hIdx >= len(r.Rendered.Headers) {
+		return -1, false
+	}
+	return hIdx, true
+}
+
 func (r *ReaderState) ensureSelectedVisible(bodyHeight int) {
 	item, ok := r.CurrentSelectable()
 	if !ok {
