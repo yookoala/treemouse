@@ -76,6 +76,8 @@ type AppModel struct {
 	HelpCloseHovered     bool
 	UnsupportedMsg       string // Non-empty when the "Unsupported filetype" popup is open
 	UnsupCloseHovered    bool
+	ShowEditConfirm      bool   // Whether the Edit File confirmation popup is open
+	EditHoverChoice      int    // 0 = none, 1 = Yes hovered, 2 = No hovered
 	ShowQuitConfirm      bool
 	QuitHoverChoice      int    // 0 = none, 1 = Yes hovered, 2 = No hovered
 	Width                int
@@ -252,7 +254,7 @@ func (m *AppModel) updateInternal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		// 1. If Quit Confirmation Popup is open over Base Mode:
+		// 1. If Quit Confirmation Popup is open:
 		// Y/y or Enter confirms quitting, and N/n or Esc cancels.
 		if m.ShowQuitConfirm {
 			switch strings.ToLower(key) {
@@ -260,6 +262,26 @@ func (m *AppModel) updateInternal(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "n", "esc":
 				m.ShowQuitConfirm = false
+				m.QuitHoverChoice = 0
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// 1b. If Edit Confirmation Popup is open:
+		// Y/y or Enter confirms opening the file in $EDITOR, and N/n or Esc cancels.
+		if m.ShowEditConfirm {
+			switch strings.ToLower(key) {
+			case "y", "enter":
+				m.ShowEditConfirm = false
+				m.EditHoverChoice = 0
+				if m.Reader != nil {
+					return m, openEditorCmd(m.Reader.FilePath)
+				}
+				return m, nil
+			case "n", "esc":
+				m.ShowEditConfirm = false
+				m.EditHoverChoice = 0
 				return m, nil
 			}
 			return m, nil
@@ -376,6 +398,41 @@ func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if m.QuitHoverChoice == 2 {
 				m.ShowQuitConfirm = false
 				m.QuitHoverChoice = 0
+			}
+		}
+		return m, nil
+	}
+	if m.ShowEditConfirm {
+		popupW := 42
+		if m.Width-4 < popupW {
+			popupW = m.Width - 2
+		}
+		if popupW < 20 {
+			popupW = m.Width
+		}
+		startRow, leftCol, _ := popupBounds(m.Height, 5, m.Width, popupW)
+		btnRow := startRow + 3
+		m.EditHoverChoice = 0
+		if msg.Y == btnRow {
+			relX := msg.X - leftCol
+			if relX >= 8 && relX <= 17 {
+				m.EditHoverChoice = 1
+			} else if relX >= 22 && relX <= 31 {
+				m.EditHoverChoice = 2
+			}
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.EditHoverChoice == 1 {
+				m.ShowEditConfirm = false
+				m.EditHoverChoice = 0
+				if m.Reader != nil {
+					return m, openEditorCmd(m.Reader.FilePath)
+				}
+				return m, nil
+			}
+			if m.EditHoverChoice == 2 {
+				m.ShowEditConfirm = false
+				m.EditHoverChoice = 0
 			}
 		}
 		return m, nil
@@ -684,6 +741,7 @@ func (m *AppModel) toggleMouseMode() tea.Cmd {
 	m.CommandCloseHovered = false
 	m.HelpCloseHovered = false
 	m.UnsupCloseHovered = false
+	m.EditHoverChoice = 0
 	m.QuitHoverChoice = 0
 	if m.Browser != nil {
 		m.Browser.CloseHovered = false
@@ -903,7 +961,8 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 		}
 	case "edit_file":
 		if m.Reader != nil {
-			return m, openEditorCmd(m.Reader.FilePath)
+			m.ShowEditConfirm = true
+			m.EditHoverChoice = 0
 		}
 	case "reload_file":
 		if m.Reader != nil {
@@ -1054,7 +1113,9 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 
 	// Edit in $EDITOR shortcut in Reader View
 	if key == "e" {
-		return m, openEditorCmd(m.Reader.FilePath)
+		m.ShowEditConfirm = true
+		m.EditHoverChoice = 0
+		return m, nil
 	}
 
 	// Manual reload shortcut in Reader View
@@ -1524,6 +1585,8 @@ func (m *AppModel) View() string {
 		lines = m.renderWithHelpManual(lines)
 	} else if m.UnsupportedMsg != "" {
 		lines = m.renderWithUnsupportedPopup(lines)
+	} else if m.ShowEditConfirm {
+		lines = m.renderWithEditPopup(lines)
 	} else if m.ShowQuitConfirm {
 		lines = m.renderWithQuitPopup(lines)
 	}
@@ -1703,6 +1766,43 @@ func (m *AppModel) renderWithUnsupportedPopup(baseLines []string) []string {
 	}
 
 	return overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+}
+
+func (m *AppModel) renderWithEditPopup(baseLines []string) []string {
+	popupW := 42
+	if m.Width-4 < popupW {
+		popupW = m.Width - 2
+	}
+	if popupW < 20 {
+		popupW = m.Width
+	}
+
+	yesBtn := fgYes + "[Y] Yes"
+	if m.EditHoverChoice == 1 {
+		yesBtn = bgSelectFocus + fgBright + ansiBold + "[Y] Yes"
+	}
+	noBtn := fgNo + "[N] No"
+	if m.EditHoverChoice == 2 {
+		noBtn = bgSelectFocus + fgBright + ansiBold + "[N] No"
+	}
+
+	popupLines := []string{
+		styleLine("", popupW, bgSidebarHeader, fgBright),
+		styleLine("     "+ansiBold+fgBright+"Opening this file with editor...", popupW, bgSidebarHeader, fgBright),
+		styleLine("", popupW, bgSidebarHeader, fgBright),
+		styleLine("         "+yesBtn+ansiReset+bgSidebarHeader+"        "+noBtn, popupW, bgSidebarHeader, fgBright),
+		styleLine("", popupW, bgSidebarHeader, fgBright),
+	}
+
+	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+	if len(overlaid) > 0 {
+		editFooter := formatFooterHints(bgBar,
+			HintPair{Key: "Y", Desc: "Confirm"},
+			HintPair{Key: "N", Desc: "Cancel"},
+		)
+		overlaid[len(overlaid)-1] = styleLine(editFooter, m.Width, bgBar, fgMuted)
+	}
+	return overlaid
 }
 
 func (m *AppModel) renderWithQuitPopup(baseLines []string) []string {

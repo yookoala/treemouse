@@ -706,10 +706,32 @@ func TestReaderEditCommand(t *testing.T) {
 		t.Errorf("expected edit_file command in Reader command palette, got %+v", cmds)
 	}
 
-	// Pressing 'e' in Reader returns a non-nil ExecProcess Tea command and stays in ModeReader
+	// Pressing 'e' in Reader opens the Edit Confirmation popup first
 	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd != nil {
+		t.Fatalf("expected pressing 'e' in Reader to open confirmation popup before invoking editor")
+	}
+	if !app.ShowEditConfirm {
+		t.Fatalf("expected ShowEditConfirm to be true after pressing 'e'")
+	}
+	if !strings.Contains(app.View(), "Opening this file with editor...") {
+		t.Errorf("expected View() to show 'Opening this file with editor...', got:\n%s", app.View())
+	}
+
+	// Pressing 'n' cancels the Edit Confirmation popup without launching the editor
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if app.ShowEditConfirm || cmd != nil {
+		t.Fatalf("expected 'n' to cancel Edit Confirmation popup without launching editor")
+	}
+
+	// Pressing 'e' again and confirming with 'y' returns a non-nil ExecProcess Tea command and stays in ModeReader
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if app.ShowEditConfirm {
+		t.Fatalf("expected ShowEditConfirm to be false after confirming with 'y'")
+	}
 	if cmd == nil {
-		t.Fatalf("expected pressing 'e' in Reader to return tea.ExecProcess cmd")
+		t.Fatalf("expected confirming with 'y' to return tea.ExecProcess cmd")
 	}
 	if app.Mode != ModeReader {
 		t.Errorf("expected app to remain in ModeReader during/after editor invocation, got %v", app.Mode)
