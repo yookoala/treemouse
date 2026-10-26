@@ -1098,14 +1098,14 @@ func (r *ReaderState) renderSearchBar(width int) string {
 
 	var rightHints string
 	if r.IsNarrow {
-		rightHints = fmt.Sprintf("%s[%s]%s  %s↑/↓%s%s Next/Prev  %s^I%s%s %s  %sEsc%s%s Close ",
+		rightHints = fmt.Sprintf(" %s[%s]%s  %s↑/↓%s%s Next/Prev  %s^I%s%s %s  %sEsc%s%s Close ",
 			matchColor, matchInfo, ansiReset+bgBar,
 			fgHintKey, ansiReset+bgBar, fgHintDesc,
 			fgHintKey, ansiReset+bgBar, caseDescColor, caseLabel,
 			fgHintKey, ansiReset+bgBar, fgHintDesc,
 		)
 	} else {
-		rightHints = fmt.Sprintf("%s[%s]%s   %s↑/↓%s%s Prev/Next   %sTab%s%s Case (%s)   %sEsc%s%s Close ",
+		rightHints = fmt.Sprintf("  %s[%s]%s   %s↑/↓%s%s Prev/Next   %sTab%s%s Case (%s)   %sEsc%s%s Close ",
 			matchColor, matchInfo, ansiReset+bgBar,
 			fgHintKey, ansiReset+bgBar, fgHintDesc,
 			fgHintKey, ansiReset+bgBar, caseDescColor, caseLabel,
@@ -1113,8 +1113,24 @@ func (r *ReaderState) renderSearchBar(width int) string {
 		)
 	}
 
-	leftPrompt := " " + fgActiveCursor + "/" + fgBright + r.SearchQuery + fgActiveCursor + "▎"
-	return styleBarWithRight(leftPrompt, rightHints, width, bgBar, fgBright, fgMuted)
+	label := bgBar + " " + fgHintKey + "/" + ansiReset + bgBar + " " + fgHintDesc + "Search "
+	labelW := visibleWidth(label)
+	rightW := visibleWidth(rightHints)
+	if labelW+1+rightW > width {
+		leftPart := label + bgSidebarHeader + " " + fgBright + r.SearchQuery + fgActiveCursor + "▎"
+		return styleBarWithRight(leftPart, rightHints, width, bgBar, fgBright, fgMuted)
+	}
+
+	fieldW := width - labelW - rightW
+	fieldContent := " " + fgBright + r.SearchQuery + fgActiveCursor + "▎"
+	fieldTrunc := truncateANSI(fieldContent, fieldW)
+	fieldPad := fieldW - visibleWidth(fieldTrunc)
+	if fieldPad < 0 {
+		fieldPad = 0
+	}
+	fieldBox := bgSidebarHeader + fieldTrunc + bgSidebarHeader + strings.Repeat(" ", fieldPad)
+
+	return label + fieldBox + ansiReset + bgBar + rightHints + ansiReset
 }
 
 // decorateSelectedLine highlights the currently focused link or table in Selection Mode.

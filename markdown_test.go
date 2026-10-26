@@ -1222,6 +1222,9 @@ func TestReaderLiveTextSearchAndNavigation(t *testing.T) {
 	}
 
 	view := app.View()
+	if !strings.Contains(stripANSI(view), "/ Search ") {
+		t.Errorf("expected bottom search bar to display '/ Search ' label, got:\n%s", view)
+	}
 	if !strings.Contains(view, "1/3 matches") {
 		t.Errorf("expected bottom search bar to display '1/3 matches', got:\n%s", view)
 	}
