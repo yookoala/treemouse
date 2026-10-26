@@ -349,10 +349,15 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	}
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	// Check minimal footer in Reader view (without colons or Search hint, using bright key + darker description)
+	// Check minimal footer and top-right × in Reader view (without colons or Search hint)
 	view := app.View()
-	if !strings.Contains(view, "Commands") || !strings.Contains(view, "Quit") {
-		t.Errorf("expected minimal footer with 'Commands' and 'Quit', got:\n%s", view)
+	viewLines := strings.Split(view, "\n")
+	if !strings.Contains(viewLines[0], "×") {
+		t.Errorf("expected top-right of reading area to show '×', got:\n%s", viewLines[0])
+	}
+	footerLine := viewLines[len(viewLines)-1]
+	if !strings.Contains(footerLine, "Commands") || !strings.Contains(footerLine, "Close") {
+		t.Errorf("expected minimal footer with 'Commands' and 'Esc Close', got:\n%s", footerLine)
 	}
 	if strings.Contains(view, "Search") {
 		t.Errorf("expected 'Search' hint not to appear in footer bar, got:\n%s", view)
@@ -1171,6 +1176,29 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 	app.Update(tea.MouseMsg{X: col0X, Y: row1Y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if !app.TableViewer.ShowCellPopup {
 		t.Fatalf("expected clicking non-link cell in TableViewer to open ShowCellPopup")
+	}
+
+	// 4. Close Cell Detail Popup and TableViewer via their top-right × buttons, then click top-right × in Reader
+	popupW, bodyRows := app.TableViewer.cellPopupDimensions(80, 20)
+	startRow, _, rightCol := popupBounds(20, bodyRows+4, 80, popupW)
+	app.Update(tea.MouseMsg{X: rightCol - 2, Y: startRow, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if app.TableViewer.ShowCellPopup {
+		t.Fatalf("expected clicking top-right × of Cell Detail Popup to close it")
+	}
+
+	app.Update(tea.MouseMsg{X: 78, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if app.Mode != ModeReader || app.Reader == nil {
+		t.Fatalf("expected clicking top-right × in TableViewer to return to ModeReader, got %v", app.Mode)
+	}
+
+	closeX := 80 - app.Reader.sidebarWidth(80) - 2
+	app.Update(tea.MouseMsg{X: closeX, Y: 0, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	if !app.Reader.CloseHovered {
+		t.Errorf("expected hovering over top-right × at X=%d,Y=0 to set CloseHovered=true", closeX)
+	}
+	app.Update(tea.MouseMsg{X: closeX, Y: 0, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if app.Mode != ModeBrowser {
+		t.Fatalf("expected clicking top-right × in Reader to close back to ModeBrowser, got %v", app.Mode)
 	}
 }
 

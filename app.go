@@ -66,15 +66,19 @@ type AppModel struct {
 	TableViewer     *TableViewerState
 	ShowSyntax      bool   // Whether Markdown syntax & HTML comments are displayed
 	AutoReload      bool   // Whether modified files are automatically reloaded (default: false)
-	ShowCommandMenu bool   // Whether the ":" Commands popup is open
-	CommandQuery    string
-	CommandCursor   int
-	CommandScroll   int
-	ShowHelpManual  bool   // Whether the Help Manual modal is open
-	UnsupportedMsg  string // Non-empty when the "Unsupported filetype" popup is open
-	ShowQuitConfirm bool
-	Width           int
-	Height          int
+	ShowCommandMenu      bool   // Whether the ":" Commands popup is open
+	CommandQuery         string
+	CommandCursor        int
+	CommandScroll        int
+	CommandCloseHovered  bool
+	ShowHelpManual       bool   // Whether the Help Manual modal is open
+	HelpCloseHovered     bool
+	UnsupportedMsg       string // Non-empty when the "Unsupported filetype" popup is open
+	UnsupCloseHovered    bool
+	ShowQuitConfirm      bool
+	QuitHoverChoice      int    // 0 = none, 1 = Yes hovered, 2 = No hovered
+	Width                int
+	Height               int
 }
 
 // NewAppModel constructs the application model from an optional CLI path argument.
@@ -303,17 +307,64 @@ func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	// Handle modal overlays first
 	if m.ShowQuitConfirm {
+		popupW := 34
+		if m.Width-4 < popupW {
+			popupW = m.Width - 2
+		}
+		if popupW < 20 {
+			popupW = m.Width
+		}
+		startRow, leftCol, _ := popupBounds(m.Height, 5, m.Width, popupW)
+		btnRow := startRow + 3
+		m.QuitHoverChoice = 0
+		if msg.Y == btnRow {
+			relX := msg.X - leftCol
+			if relX >= 4 && relX <= 13 {
+				m.QuitHoverChoice = 1
+			} else if relX >= 18 && relX <= 27 {
+				m.QuitHoverChoice = 2
+			}
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.QuitHoverChoice == 1 {
+				return m, tea.Quit
+			}
+			if m.QuitHoverChoice == 2 {
+				m.ShowQuitConfirm = false
+				m.QuitHoverChoice = 0
+			}
+		}
 		return m, nil
 	}
 	if m.UnsupportedMsg != "" {
+		popupW := 46
+		if m.Width-4 < popupW {
+			popupW = m.Width - 2
+		}
+		if popupW < 22 {
+			popupW = m.Width
+		}
+		startRow, leftCol, rightCol := popupBounds(m.Height, 5, m.Width, popupW)
+		m.UnsupCloseHovered = isTopRightCloseHit(msg.X, msg.Y, startRow, leftCol, rightCol)
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			m.UnsupportedMsg = ""
+			m.UnsupCloseHovered = false
 		}
 		return m, nil
 	}
 	if m.ShowHelpManual {
+		popupW := 60
+		if m.Width-4 < popupW {
+			popupW = m.Width - 2
+		}
+		if popupW < 24 {
+			popupW = m.Width
+		}
+		startRow, leftCol, rightCol := popupBounds(m.Height, 23, m.Width, popupW)
+		m.HelpCloseHovered = isTopRightCloseHit(msg.X, msg.Y, startRow, leftCol, rightCol)
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			m.ShowHelpManual = false
+			m.HelpCloseHovered = false
 		}
 		return m, nil
 	}
@@ -323,9 +374,36 @@ func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if m.CommandCursor > 0 {
 				m.CommandCursor--
 			}
+			return m, nil
 		} else if msg.Button == tea.MouseButtonWheelDown {
 			if m.CommandCursor < len(cmds)-1 {
 				m.CommandCursor++
+			}
+			return m, nil
+		}
+
+		popupW, popupH, visibleCount := m.commandMenuLayout(len(cmds))
+		startRow, leftCol, rightCol := popupBounds(m.Height, popupH, m.Width, popupW)
+		closeHit := isTopRightCloseHit(msg.X, msg.Y, startRow, leftCol, rightCol)
+		m.CommandCloseHovered = closeHit
+		if closeHit && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.ShowCommandMenu = false
+			m.CommandCloseHovered = false
+			return m, nil
+		}
+
+		// Hover or click on a command row inside the popup list
+		listStartRow := startRow + 2
+		if msg.X >= leftCol && msg.X < rightCol && msg.Y >= listStartRow && msg.Y < listStartRow+visibleCount && len(cmds) > 0 {
+			idx := m.CommandScroll + (msg.Y - listStartRow)
+			if idx >= 0 && idx < len(cmds) {
+				m.CommandCursor = idx
+				if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+					selected := cmds[idx]
+					m.ShowCommandMenu = false
+					m.CommandCloseHovered = false
+					return m.executeCommand(selected.ID)
+				}
 			}
 		}
 		return m, nil
@@ -344,6 +422,18 @@ func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m *AppModel) updateBrowserMouse(msg tea.MouseMsg, bodyHeight int) (tea.Model, tea.Cmd) {
 	if m.Browser == nil {
+		return m, nil
+	}
+
+	// Mobile full-screen Item Info overlay: top-right × closes the overlay
+	if m.Browser.IsNarrow && m.Browser.SidebarOpen {
+		closeHit := isTopRightCloseHit(msg.X, msg.Y, 0, 0, m.Width)
+		m.Browser.CloseHovered = closeHit
+		if closeHit && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.Browser.SidebarOpen = false
+			m.Browser.SidebarFocused = false
+			m.Browser.CloseHovered = false
+		}
 		return m, nil
 	}
 
@@ -397,7 +487,26 @@ func (m *AppModel) updateReaderMouse(msg tea.MouseMsg, bodyHeight int) (tea.Mode
 		return m, nil
 	}
 
-	// 2. Check if pointer is inside the Header Sidebar
+	// 2. Check if pointer is over the top-right × close button in the reading area (or mobile header overlay)
+	closeHit := m.Reader.CloseAtScreenPos(msg.X, msg.Y, m.Width)
+	m.Reader.CloseHovered = closeHit
+	if closeHit && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.Reader.CloseHovered = false
+		if m.Reader.IsNarrow && m.Reader.SidebarOpen {
+			m.Reader.SidebarOpen = false
+			m.Reader.SidebarFocused = false
+			return m, nil
+		}
+		m.Reader.StatusMsg = ""
+		if m.Reader.PopHistory(m.RootDir, m.Width, m.Height) {
+			return m, nil
+		}
+		m.Mode = ModeBrowser
+		m.Reader = nil
+		return m, nil
+	}
+
+	// 3. Check if pointer is inside the Header Sidebar
 	if hIdx, inSidebar := m.Reader.HeaderAtSidebarScreenPos(msg.X, msg.Y, m.Width, m.Height); inSidebar {
 		switch msg.Action {
 		case tea.MouseActionMotion:
@@ -411,7 +520,7 @@ func (m *AppModel) updateReaderMouse(msg tea.MouseMsg, bodyHeight int) (tea.Mode
 		return m, nil
 	}
 
-	// 3. Main Reader pane: hover highlights selectable item; simple mouse click (press) opens selectable item
+	// 4. Main Reader pane: hover highlights selectable item; simple mouse click (press) opens selectable item
 	switch msg.Action {
 	case tea.MouseActionMotion:
 		if selIdx, hit := m.Reader.SelectableAtScreenPos(msg.X, msg.Y, m.Width, m.Height); hit {
@@ -437,19 +546,38 @@ func (m *AppModel) updateTableViewerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 
 	// When the scrollable Cell Detail Popup is open:
 	if m.TableViewer.ShowCellPopup {
+		closeHit := m.TableViewer.CellPopupCloseAtScreenPos(msg.X, msg.Y, m.Width, m.Height)
+		m.TableViewer.CellCloseHovered = closeHit
 		if msg.Button == tea.MouseButtonWheelUp {
 			m.TableViewer.ScrollCellPopup(-2, m.Width, m.Height)
 		} else if msg.Button == tea.MouseButtonWheelDown {
 			m.TableViewer.ScrollCellPopup(2, m.Width, m.Height)
 		} else if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if closeHit {
+				m.TableViewer.ShowCellPopup = false
+				m.TableViewer.CellPopupScroll = 0
+				m.TableViewer.CellCloseHovered = false
+				return m, nil
+			}
 			if _, dest, ok := m.TableViewer.ActiveCellLink(); ok {
 				m.TableViewer.ShowCellPopup = false
 				m.TableViewer.CellPopupScroll = 0
+				m.TableViewer.CellCloseHovered = false
 				return m.openMarkdownLink(dest)
 			}
 			m.TableViewer.ShowCellPopup = false
 			m.TableViewer.CellPopupScroll = 0
+			m.TableViewer.CellCloseHovered = false
 		}
+		return m, nil
+	}
+
+	// Top-right × button in Table Viewer header bar closes back to Reader
+	closeHit := isTopRightCloseHit(msg.X, msg.Y, 0, 0, m.Width)
+	m.TableViewer.CloseHovered = closeHit
+	if closeHit && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.Mode = ModeReader
+		m.TableViewer = nil
 		return m, nil
 	}
 
@@ -1328,7 +1456,7 @@ func (m *AppModel) View() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
+func (m *AppModel) commandMenuLayout(numCmds int) (int, int, int) {
 	popupW := 62
 	if m.Width-4 < popupW {
 		popupW = m.Width - 2
@@ -1336,7 +1464,25 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	if popupW < 24 {
 		popupW = m.Width
 	}
+	maxListRows := m.Height - 8
+	if maxListRows < 3 {
+		maxListRows = 3
+	}
+	if maxListRows > 8 {
+		maxListRows = 8
+	}
+	visibleCount := numCmds
+	if visibleCount > maxListRows {
+		visibleCount = maxListRows
+	}
+	listRows := visibleCount
+	if listRows == 0 {
+		listRows = 1
+	}
+	return popupW, listRows + 3, visibleCount
+}
 
+func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	cmds := m.availableCommands()
 	if m.CommandCursor >= len(cmds) {
 		m.CommandCursor = len(cmds) - 1
@@ -1345,12 +1491,10 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 		m.CommandCursor = 0
 	}
 
-	maxListRows := m.Height - 8
-	if maxListRows < 3 {
-		maxListRows = 3
-	}
-	if maxListRows > 8 {
-		maxListRows = 8
+	popupW, _, visibleCount := m.commandMenuLayout(len(cmds))
+	maxListRows := visibleCount
+	if maxListRows < 1 {
+		maxListRows = 1
 	}
 
 	if m.CommandCursor < m.CommandScroll {
@@ -1361,17 +1505,13 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	}
 
 	var popupLines []string
-	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", "[: Close] ", popupW, bgBar, fgSidebarTitle, fgMuted))
+	popupLines = append(popupLines, styleBarWithRight(" ⚡ Commands", formatCloseButton(m.CommandCloseHovered, bgBar), popupW, bgBar, fgSidebarTitle, fgMuted))
 	filterLine := " Filter " + fgBright + m.CommandQuery + fgActiveCursor + "▎"
 	popupLines = append(popupLines, styleLine(filterLine, popupW, bgSidebarHeader, fgMuted))
 
 	if len(cmds) == 0 {
 		popupLines = append(popupLines, styleLine("   (no matching commands)", popupW, bgSidebar, fgMuted))
 	} else {
-		visibleCount := len(cmds)
-		if visibleCount > maxListRows {
-			visibleCount = maxListRows
-		}
 		for i := 0; i < visibleCount; i++ {
 			idx := m.CommandScroll + i
 			if idx >= len(cmds) {
@@ -1450,7 +1590,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 	}
 
 	var popupLines []string
-	popupLines = append(popupLines, styleBarWithRight(" 📖 Help Manual", "[Esc Close] ", popupW, bgBar, fgActiveCursor, fgMuted))
+	popupLines = append(popupLines, styleBarWithRight(" 📖 Help Manual", formatCloseButton(m.HelpCloseHovered, bgBar), popupW, bgBar, fgActiveCursor, fgMuted))
 	for _, item := range helpItems {
 		if item.right == "" {
 			popupLines = append(popupLines, styleLine(item.left, popupW, bgSidebarHeader, fgH3))
@@ -1477,7 +1617,7 @@ func (m *AppModel) renderWithUnsupportedPopup(baseLines []string) []string {
 	}
 
 	popupLines := []string{
-		styleBarWithRight(" ⚠ Unsupported Filetype", "[Esc Close] ", popupW, bgBar, fgWarn, fgMuted),
+		styleBarWithRight(" ⚠ Unsupported Filetype", formatCloseButton(m.UnsupCloseHovered, bgBar), popupW, bgBar, fgWarn, fgMuted),
 		styleLine("", popupW, bgSidebarHeader, fgBright),
 		styleLine("  "+fgBright+m.UnsupportedMsg, popupW, bgSidebarHeader, fgBright),
 		styleLine("", popupW, bgSidebarHeader, fgBright),
@@ -1499,11 +1639,20 @@ func (m *AppModel) renderWithQuitPopup(baseLines []string) []string {
 		popupW = m.Width
 	}
 
+	yesBtn := fgYes + "[Y] Yes"
+	if m.QuitHoverChoice == 1 {
+		yesBtn = bgSelectFocus + fgBright + ansiBold + "[Y] Yes"
+	}
+	noBtn := fgNo + "[N] No"
+	if m.QuitHoverChoice == 2 {
+		noBtn = bgSelectFocus + fgBright + ansiBold + "[N] No"
+	}
+
 	popupLines := []string{
 		styleLine("", popupW, bgSidebarHeader, fgBright),
 		styleLine("       "+ansiBold+fgBright+"Quit Application?", popupW, bgSidebarHeader, fgBright),
 		styleLine("", popupW, bgSidebarHeader, fgBright),
-		styleLine("     "+fgYes+"[Y] Yes"+ansiReset+bgSidebarHeader+"        "+fgNo+"[N] No", popupW, bgSidebarHeader, fgBright),
+		styleLine("     "+yesBtn+ansiReset+bgSidebarHeader+"        "+noBtn, popupW, bgSidebarHeader, fgBright),
 		styleLine("", popupW, bgSidebarHeader, fgBright),
 	}
 

@@ -49,10 +49,12 @@ type TableViewerState struct {
 	ColOffset       int // First visible column index (beyond pinned col 0 when applicable)
 	ShowSyntax      bool
 	DocumentTitle   string
-	ShowCellPopup   bool // True when the full-content Cell Detail popup is open
-	CellPopupScroll int  // Vertical scroll offset inside the Cell Detail popup
-	LastColSpans    []tableColSpan
-	LastRowSpans    []tableRowSpan
+	ShowCellPopup      bool // True when the full-content Cell Detail popup is open
+	CellPopupScroll    int  // Vertical scroll offset inside the Cell Detail popup
+	CloseHovered       bool // True when mouse pointer hovers over top-right × of Table Viewer
+	CellCloseHovered   bool // True when mouse pointer hovers over top-right × of Cell Detail popup
+	LastColSpans       []tableColSpan
+	LastRowSpans       []tableRowSpan
 }
 
 // NewTableViewerState creates an interactive viewer state for the given table.
@@ -632,7 +634,7 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 
 	// Top Bar
 	var lines []string
-	colInfo := fmt.Sprintf("[Row %d/%d  Col %d/%d] ", tv.CursorRow+1, maxInt(1, numRows), tv.CursorCol+1, maxInt(1, numCols))
+	colInfo := fmt.Sprintf("[Row %d/%d  Col %d/%d] %s", tv.CursorRow+1, maxInt(1, numRows), tv.CursorCol+1, maxInt(1, numCols), formatCloseButton(tv.CloseHovered, bgBar))
 	leftIndicator := ""
 	if tv.ColOffset > 0 {
 		leftIndicator = "◀ "
@@ -840,14 +842,14 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 			HintPair{Key: "Enter", Desc: "Open Link"},
 			HintPair{Key: "Space", Desc: "View Cell"},
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Back"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 	} else {
 		footer = formatFooterHints(bgBar,
 			HintPair{Key: "↑/↓/←/→", Desc: "Navigate"},
 			HintPair{Key: "Enter", Desc: "View Cell"},
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Back"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 	}
 	lines = append(lines, styleLine(footer, width, bgBar, fgMuted))
@@ -931,10 +933,10 @@ func (tv *TableViewerState) renderWithCellPopup(baseLines []string, width, heigh
 		colName = stripInlineMarkdown(tv.Table.Headers[tv.CursorCol])
 	}
 	title := fmt.Sprintf(" 🔍 Row %d — %s", tv.CursorRow+1, colName)
-	scrollBadge := "[Esc Close] "
+	scrollBadge := formatCloseButton(tv.CellCloseHovered, bgBar)
 	if maxScroll > 0 {
 		pct := tv.CellPopupScroll * 100 / maxScroll
-		scrollBadge = fmt.Sprintf("[%d%%] [Esc Close] ", pct)
+		scrollBadge = fmt.Sprintf("[%d%%] %s", pct, formatCloseButton(tv.CellCloseHovered, bgBar))
 	}
 
 	var popupLines []string
@@ -998,6 +1000,15 @@ func (tv *TableViewerState) CellAtScreenPos(x, y, width, height int) (int, int, 
 		return -1, -1, false
 	}
 	return hitRow, hitCol, true
+}
+
+// CellPopupCloseAtScreenPos reports whether screen coordinates (x, y) hit the top-right "×"
+// of the Cell Detail Popup.
+func (tv *TableViewerState) CellPopupCloseAtScreenPos(x, y, width, height int) bool {
+	popupW, bodyRows := tv.cellPopupDimensions(width, height)
+	popupH := bodyRows + 4
+	startRow, leftCol, rightCol := popupBounds(height, popupH, width, popupW)
+	return isTopRightCloseHit(x, y, startRow, leftCol, rightCol)
 }
 
 func maxInt(a, b int) int {

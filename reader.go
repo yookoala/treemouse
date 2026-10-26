@@ -56,6 +56,7 @@ type ReaderState struct {
 	SearchCaseSensitive bool          // Default false (case-insensitive)
 	SearchMatches       []SearchMatch // All occurrences in Rendered.Lines
 	SearchMatchIdx      int           // 0-based index of currently focused match in SearchMatches
+	CloseHovered        bool          // True when mouse pointer hovers over top-right [Esc Close]
 	StatusMsg           string
 	History             []ReaderHistoryEntry
 }
@@ -454,6 +455,17 @@ func (r *ReaderState) HeaderAtSidebarScreenPos(x, y, totalWidth, totalHeight int
 		return -1, false
 	}
 	return hIdx, true
+}
+
+// CloseAtScreenPos checks whether screen coordinates (x, y) hit the "×" close button
+// at the top-right of the reading area (or mobile header overlay) on row 0.
+func (r *ReaderState) CloseAtScreenPos(x, y, totalWidth int) bool {
+	if r.IsNarrow && r.SidebarOpen {
+		return isTopRightCloseHit(x, y, 0, 0, totalWidth)
+	}
+	sw := r.sidebarWidth(totalWidth)
+	mainW := totalWidth - sw
+	return isTopRightCloseHit(x, y, 0, 0, mainW)
 }
 
 func (r *ReaderState) ensureSelectedVisible(bodyHeight int) {
@@ -969,6 +981,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		badges.WriteString("[SYNTAX] ")
 	}
 	badges.WriteString(fmt.Sprintf("[%d%%] ", pct))
+	badges.WriteString(formatCloseButton(r.CloseHovered, bgBar))
 
 	titlePath := r.DisplayPath
 	if r.IsNarrow {
@@ -1031,7 +1044,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Quit"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 	} else if r.SelectionMode {
 		footerText = formatFooterHints(bgBar,
@@ -1042,7 +1055,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 	} else {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Quit"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 	}
 	reloadBadge := r.reloadHintBadge(bgBar)
@@ -1203,7 +1216,8 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 
 	var lines []string
 	headerTitle := " Headers " + filepath.Base(r.FilePath)
-	lines = append(lines, styleBarWithRight(headerTitle, "[Overlay] ", width, bgSidebarHeader, fgSidebarTitle, fgMuted))
+	rightBadge := "[Overlay] " + formatCloseButton(r.CloseHovered, bgSidebarHeader)
+	lines = append(lines, styleBarWithRight(headerTitle, rightBadge, width, bgSidebarHeader, fgSidebarTitle, fgMuted))
 
 	for row := 0; row < bodyHeight; row++ {
 		lines = append(lines, r.renderSidebarRow(row, width))
@@ -1212,7 +1226,7 @@ func (r *ReaderState) renderMobileSidebarOverlay(width, height int) []string {
 	footer := formatFooterHints(bgSidebarHeader,
 		HintPair{Key: "Enter", Desc: "Open"},
 		HintPair{Key: ":", Desc: "Commands"},
-		HintPair{Key: "Esc", Desc: "Quit"},
+		HintPair{Key: "Esc", Desc: "Close"},
 	)
 	reloadBadge := r.reloadHintBadge(bgSidebarHeader)
 	if reloadBadge != "" {

@@ -44,6 +44,7 @@ type BrowserState struct {
 	SidebarOpen     bool
 	SidebarFocused  bool
 	IsNarrow        bool
+	CloseHovered    bool
 	CachedMetaPath  string
 	CachedMetaMtime time.Time
 	CachedMeta      ItemMetadata
@@ -799,7 +800,8 @@ func (b *BrowserState) renderMobileSidebarOverlay(width, height int) []string {
 	var lines []string
 	meta := b.SelectedMetadata()
 	headerTitle := " Item Info " + meta.Name
-	lines = append(lines, styleBarWithRight(headerTitle, "[Overlay] ", width, bgSidebarHeader, fgSidebarTitle, fgMuted))
+	rightBadge := "[Overlay] " + formatCloseButton(b.CloseHovered, bgSidebarHeader)
+	lines = append(lines, styleBarWithRight(headerTitle, rightBadge, width, bgSidebarHeader, fgSidebarTitle, fgMuted))
 
 	sbRows := b.buildInfoSidebarRows(width)
 	for row := 0; row < bodyHeight; row++ {
@@ -812,7 +814,7 @@ func (b *BrowserState) renderMobileSidebarOverlay(width, height int) []string {
 
 	footer := formatFooterHints(bgSidebarHeader,
 		HintPair{Key: ":", Desc: "Commands"},
-		HintPair{Key: "Esc", Desc: "Quit"},
+		HintPair{Key: "Esc", Desc: "Close"},
 	)
 	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))
 	return lines

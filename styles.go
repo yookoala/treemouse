@@ -199,6 +199,36 @@ func styleBarWithRight(left, right string, width int, bg, leftFg, rightFg string
 	return bg + leftFg + leftTrunc + bg + strings.Repeat(" ", spaces) + rightFg + right + ansiReset
 }
 
+// formatCloseButton returns the styled top-right "× " close button for header bars.
+func formatCloseButton(hovered bool, barBg string) string {
+	if hovered {
+		return fgActiveCursor + ansiBold + "×" + ansiReset + barBg + " "
+	}
+	return fgMuted + "×" + ansiReset + barBg + " "
+}
+
+// isTopRightCloseHit reports whether screen coordinates (x, y) hit the top-right "×" button
+// on header row barY inside a bar occupying [barStartX, barEndX).
+func isTopRightCloseHit(x, y, barY, barStartX, barEndX int) bool {
+	if y != barY || barEndX-barStartX < 3 {
+		return false
+	}
+	return x >= barEndX-3 && x < barEndX
+}
+
+// popupBounds computes the top-left (startRow, leftCol) and right edge (rightCol) for a centered popup.
+func popupBounds(totalHeight, popupHeight, totalWidth, popupWidth int) (int, int, int) {
+	startRow := (totalHeight - popupHeight) / 2
+	if startRow < 1 {
+		startRow = 1
+	}
+	leftCol := (totalWidth - popupWidth) / 2
+	if leftCol < 0 {
+		leftCol = 0
+	}
+	return startRow, leftCol, leftCol + popupWidth
+}
+
 // overlayPopup overlays a solid rectangular block of styled lines onto the center of baseLines.
 func overlayPopup(baseLines []string, popupLines []string, totalWidth int, popupWidth int, baseBg string) []string {
 	if len(baseLines) == 0 || len(popupLines) == 0 {
@@ -207,15 +237,7 @@ func overlayPopup(baseLines []string, popupLines []string, totalWidth int, popup
 	out := make([]string, len(baseLines))
 	copy(out, baseLines)
 
-	startRow := (len(baseLines) - len(popupLines)) / 2
-	if startRow < 1 {
-		startRow = 1
-	}
-	leftCol := (totalWidth - popupWidth) / 2
-	if leftCol < 0 {
-		leftCol = 0
-	}
-	rightCol := leftCol + popupWidth
+	startRow, leftCol, rightCol := popupBounds(len(baseLines), len(popupLines), totalWidth, popupWidth)
 
 	for i, pLine := range popupLines {
 		rowIdx := startRow + i
