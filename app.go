@@ -173,13 +173,49 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 	return m, nil
 }
 
+// WindowTitle returns the OSC terminal title in the format "treemouse | <title of folder or file>".
+func (m *AppModel) WindowTitle() string {
+	name := ""
+	switch m.Mode {
+	case ModeReader, ModeTableViewer:
+		if m.Reader != nil {
+			name = filepath.Base(m.Reader.FilePath)
+		}
+	}
+	if name == "" && m.Browser != nil {
+		name = filepath.Base(m.Browser.Dir)
+	}
+	if name == "" {
+		return "treemouse"
+	}
+	return "treemouse | " + name
+}
+
 // Init implements tea.Model.
 func (m *AppModel) Init() tea.Cmd {
-	return watchFileTickCmd()
+	return tea.Batch(watchFileTickCmd(), tea.SetWindowTitle(m.WindowTitle()))
+}
+
+func (m *AppModel) withTitleSync(prevTitle string, model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	newTitle := m.WindowTitle()
+	if newTitle == prevTitle {
+		return model, cmd
+	}
+	titleCmd := tea.SetWindowTitle(newTitle)
+	if cmd == nil {
+		return model, titleCmd
+	}
+	return model, tea.Batch(cmd, titleCmd)
 }
 
 // Update implements tea.Model.
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevTitle := m.WindowTitle()
+	model, cmd := m.updateInternal(msg)
+	return m.withTitleSync(prevTitle, model, cmd)
+}
+
+func (m *AppModel) updateInternal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case fileCheckTickMsg:
 		if m.Mode == ModeReader && m.Reader != nil {

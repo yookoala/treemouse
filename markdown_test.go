@@ -1336,3 +1336,50 @@ func TestReaderLiveTextSearchAndNavigation(t *testing.T) {
 		t.Errorf("expected Esc to preserve final navigation scroll position %d, got %d", scrollAtThirdMatch, app.Reader.Scroll)
 	}
 }
+
+func TestOSCWindowTitleReporting(t *testing.T) {
+	tmp := t.TempDir()
+	subDir := filepath.Join(tmp, "docs")
+	_ = os.MkdirAll(subDir, 0o755)
+	mdPath := filepath.Join(subDir, "guide.md")
+	_ = os.WriteFile(mdPath, []byte("# Guide\n\nContent."), 0o644)
+
+	app, err := NewAppModel(tmp)
+	if err != nil {
+		t.Fatalf("NewAppModel failed: %v", err)
+	}
+
+	// In File Browser mode at tmp: title should be "treemouse | <base of tmp>"
+	wantBrowserTitle := "treemouse | " + filepath.Base(tmp)
+	if got := app.WindowTitle(); got != wantBrowserTitle {
+		t.Fatalf("WindowTitle() in Browser = %q, want %q", got, wantBrowserTitle)
+	}
+
+	// Enter "docs" subfolder -> title updates to "treemouse | docs" and returns SetWindowTitle cmd
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := app.WindowTitle(); got != "treemouse | docs" {
+		t.Fatalf("WindowTitle() after entering docs = %q, want %q", got, "treemouse | docs")
+	}
+	if cmd == nil {
+		t.Errorf("expected non-nil tea.SetWindowTitle cmd when directory changes")
+	}
+
+	// Move cursor down past ".." to "guide.md" and press Enter -> title updates to "treemouse | guide.md"
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := app.WindowTitle(); got != "treemouse | guide.md" {
+		t.Fatalf("WindowTitle() in Reader = %q, want %q", got, "treemouse | guide.md")
+	}
+	if cmd == nil {
+		t.Errorf("expected non-nil tea.SetWindowTitle cmd when opening markdown file")
+	}
+
+	// Press Esc to close Reader back to File Browser -> title reverts to "treemouse | docs"
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := app.WindowTitle(); got != "treemouse | docs" {
+		t.Fatalf("WindowTitle() after closing Reader = %q, want %q", got, "treemouse | docs")
+	}
+	if cmd == nil {
+		t.Errorf("expected non-nil tea.SetWindowTitle cmd when returning to File Browser")
+	}
+}
