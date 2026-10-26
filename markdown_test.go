@@ -1200,6 +1200,26 @@ func TestMouseScrollHoverAndClickSupport(t *testing.T) {
 	if app.Mode != ModeBrowser {
 		t.Fatalf("expected clicking top-right × in Reader to close back to ModeBrowser, got %v", app.Mode)
 	}
+
+	// 5. Toggle Mouse Mode OFF via ":" command palette -> mouse events are no longer captured
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	for _, r := range "mouse" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, mouseCmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.MouseEnabled {
+		t.Fatalf("expected MouseEnabled to be false after toggling mouse mode")
+	}
+	if mouseCmd == nil {
+		t.Fatalf("expected toggling mouse mode off to return tea.DisableMouse cmd")
+	}
+	// Hovering or clicking in File Browser while MouseEnabled is false should have no effect
+	app.Browser.Cursor = 0
+	app.Update(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	app.Update(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if app.Browser.Cursor != 0 || app.Mode != ModeBrowser {
+		t.Errorf("expected mouse events to be ignored when MouseEnabled is false, got Cursor=%d Mode=%v", app.Browser.Cursor, app.Mode)
+	}
 }
 
 func TestReaderLiveTextSearchAndNavigation(t *testing.T) {

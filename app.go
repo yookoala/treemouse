@@ -64,9 +64,10 @@ type AppModel struct {
 	Browser         *BrowserState
 	Reader          *ReaderState
 	TableViewer     *TableViewerState
-	ShowSyntax      bool   // Whether Markdown syntax & HTML comments are displayed
-	AutoReload      bool   // Whether modified files are automatically reloaded (default: false)
-	ShowCommandMenu      bool   // Whether the ":" Commands popup is open
+	ShowSyntax          bool   // Whether Markdown syntax & HTML comments are displayed
+	AutoReload          bool   // Whether modified files are automatically reloaded (default: false)
+	MouseEnabled        bool   // Whether mouse click and motion events are captured by the application (default: true)
+	ShowCommandMenu     bool   // Whether the ":" Commands popup is open
 	CommandQuery         string
 	CommandCursor        int
 	CommandScroll        int
@@ -100,11 +101,12 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 			return nil, err
 		}
 		return &AppModel{
-			Mode:    ModeBrowser,
-			RootDir: absCwd,
-			Browser: browser,
-			Width:   width,
-			Height:  height,
+			Mode:         ModeBrowser,
+			RootDir:      absCwd,
+			Browser:      browser,
+			MouseEnabled: true,
+			Width:        width,
+			Height:       height,
 		}, nil
 	}
 
@@ -123,11 +125,12 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 			return nil, err
 		}
 		return &AppModel{
-			Mode:    ModeBrowser,
-			RootDir: absTarget,
-			Browser: browser,
-			Width:   width,
-			Height:  height,
+			Mode:         ModeBrowser,
+			RootDir:      absTarget,
+			Browser:      browser,
+			MouseEnabled: true,
+			Width:        width,
+			Height:       height,
 		}, nil
 	}
 
@@ -148,11 +151,12 @@ func NewAppModel(targetPath string) (*AppModel, error) {
 	_ = browser.LoadDir(parentDir, fileName)
 
 	m := &AppModel{
-		Mode:    ModeBrowser,
-		RootDir: boundRoot,
-		Browser: browser,
-		Width:   width,
-		Height:  height,
+		Mode:         ModeBrowser,
+		RootDir:      boundRoot,
+		Browser:      browser,
+		MouseEnabled: true,
+		Width:        width,
+		Height:       height,
 	}
 
 	if IsSupportedMarkdown(fileName) {
@@ -300,6 +304,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if !m.MouseEnabled {
+		return m, nil
+	}
+
 	bodyHeight := m.Height - 2
 	if bodyHeight < 1 {
 		bodyHeight = 1
@@ -635,6 +643,28 @@ func (m *AppModel) toggleAutoReload() {
 	}
 }
 
+func (m *AppModel) toggleMouseMode() tea.Cmd {
+	m.MouseEnabled = !m.MouseEnabled
+	m.CommandCloseHovered = false
+	m.HelpCloseHovered = false
+	m.UnsupCloseHovered = false
+	m.QuitHoverChoice = 0
+	if m.Browser != nil {
+		m.Browser.CloseHovered = false
+	}
+	if m.Reader != nil {
+		m.Reader.CloseHovered = false
+	}
+	if m.TableViewer != nil {
+		m.TableViewer.CloseHovered = false
+		m.TableViewer.CellCloseHovered = false
+	}
+	if m.MouseEnabled {
+		return tea.EnableMouseAllMotion
+	}
+	return tea.DisableMouse
+}
+
 func (m *AppModel) openCommandMenu() {
 	m.ShowCommandMenu = true
 	m.CommandQuery = ""
@@ -652,12 +682,17 @@ func (m *AppModel) availableCommands() []CommandOption {
 	if m.AutoReload {
 		autoReloadLabel = "Toggle Auto-Reload on File Change (Currently: ON)"
 	}
+	mouseLabel := "Toggle Mouse Mode (Currently: OFF)"
+	if m.MouseEnabled {
+		mouseLabel = "Toggle Mouse Mode (Currently: ON)"
+	}
 
 	var all []CommandOption
 	if m.Mode == ModeTableViewer && m.TableViewer != nil {
 		all = []CommandOption{
 			{ID: "table_view_cell", Label: "Inspect Full Cell Content Popup", Shortcut: "[Enter / Space]"},
 			{ID: "table_open_cell", Label: "Open Link in Active Cell", Shortcut: "[Enter]"},
+			{ID: "toggle_mouse", Label: mouseLabel, Shortcut: ""},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
 			{ID: "close_table", Label: "Exit Table Viewer Back to Reader", Shortcut: "[Esc]"},
@@ -680,6 +715,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "edit_file", Label: "Edit File in $EDITOR", Shortcut: "[e]"},
 			{ID: "reload_file", Label: "Reload Current File from Disk", Shortcut: "[r]"},
 			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
+			{ID: "toggle_mouse", Label: mouseLabel, Shortcut: ""},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "toggle_sidebar", Label: sidebarLabel, Shortcut: "[t]"},
 			{ID: "focus_sidebar", Label: "Switch Focus: Reader / Header Sidebar", Shortcut: "[Tab]"},
@@ -707,6 +743,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "toggle_filter", Label: filterLabel, Shortcut: "[f]"},
 			{ID: "parent_dir", Label: "Go to Parent Directory", Shortcut: "[Bksp]"},
 			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
+			{ID: "toggle_mouse", Label: mouseLabel, Shortcut: ""},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
 			{ID: "quit_app", Label: "Quit Application", Shortcut: "[q / Esc]"},
@@ -838,6 +875,8 @@ func (m *AppModel) executeCommand(id string) (tea.Model, tea.Cmd) {
 		}
 	case "toggle_autoreload":
 		m.toggleAutoReload()
+	case "toggle_mouse":
+		return m, m.toggleMouseMode()
 	case "toggle_syntax":
 		m.toggleSyntaxDisplay()
 	case "toggle_filter":
