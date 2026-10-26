@@ -839,14 +839,14 @@ func (tv *TableViewerState) RenderLines(width, height int) []string {
 			HintPair{Key: "↑/↓/←/→", Desc: "Navigate"},
 			HintPair{Key: "Enter", Desc: "Open Link"},
 			HintPair{Key: "Space", Desc: "View Cell"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Back"},
 		)
 	} else {
 		footer = formatFooterHints(bgBar,
 			HintPair{Key: "↑/↓/←/→", Desc: "Navigate"},
 			HintPair{Key: "Enter", Desc: "View Cell"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Back"},
 		)
 	}

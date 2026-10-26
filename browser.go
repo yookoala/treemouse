@@ -181,6 +181,7 @@ func NewBrowserState(dir string, rootDir ...string) (*BrowserState, error) {
 	b := &BrowserState{
 		RootDir:     boundRoot,
 		Dir:         absDir,
+		FilterMD:    true, // Default to showing folders and supported Markdown files only
 		SidebarOpen: true, // Default open on wide screens; OnResize adjusts if narrow
 		IsNarrow:    false,
 	}
@@ -778,14 +779,13 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar (only essential features: Open, Commands, Quit)
+	// 3. Bottom Footer Bar (only essential features: Commands, Quit)
 	var footerText string
 	if b.StatusMsg != "" {
 		footerText = " " + fgWarn + b.StatusMsg
 	} else {
 		footerText = formatFooterHints(bgBar,
-			HintPair{Key: "Enter", Desc: "Open"},
-			HintPair{Key: "/", Desc: "Commands"},
+			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
 	}
@@ -811,7 +811,7 @@ func (b *BrowserState) renderMobileSidebarOverlay(width, height int) []string {
 	}
 
 	footer := formatFooterHints(bgSidebarHeader,
-		HintPair{Key: "/", Desc: "Commands"},
+		HintPair{Key: ":", Desc: "Commands"},
 		HintPair{Key: "Esc", Desc: "Quit"},
 	)
 	lines = append(lines, styleLine(footer, width, bgSidebarHeader, fgMuted))

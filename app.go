@@ -50,7 +50,7 @@ const (
 	ModeTableViewer                // Pushed Mode: Full-screen Interactive Table Viewer
 )
 
-// CommandOption represents an executable command in the "/" Command Palette popup.
+// CommandOption represents an executable command in the ":" Command Palette popup.
 type CommandOption struct {
 	ID       string
 	Label    string
@@ -249,9 +249,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateReaderSearch(msg)
 		}
 
-		// 5. Global ":" shortcut opens the Commands popup (and "/" still opens Commands in File Browser / Table Viewer)
-		if key == ":" || (key == "/" && m.Mode != ModeReader) {
+		// 5. Global ":" shortcut opens the Commands popup in all modes
+		if key == ":" {
 			m.openCommandMenu()
+			return m, nil
+		}
+
+		// 5b. Global "q" shortcut opens the Quit Confirmation popup regardless of active mode
+		if key == "q" {
+			m.ShowQuitConfirm = true
 			return m, nil
 		}
 
@@ -527,6 +533,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
 			{ID: "close_table", Label: "Exit Table Viewer Back to Reader", Shortcut: "[Esc]"},
+			{ID: "quit_app", Label: "Quit Application", Shortcut: "[q]"},
 		}
 	} else if m.Mode == ModeReader && m.Reader != nil {
 		sidebarLabel := "Toggle Header Sidebar"
@@ -552,6 +559,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "scroll_bottom", Label: "Jump to Bottom of Document", Shortcut: "[G]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
 			{ID: "back_files", Label: "Back to File Browser", Shortcut: "[Esc]"},
+			{ID: "quit_app", Label: "Quit Application", Shortcut: "[q]"},
 		}
 	} else {
 		filterLabel := "Toggle Filter: Markdown Files Only (Currently: ALL)"
@@ -573,7 +581,7 @@ func (m *AppModel) availableCommands() []CommandOption {
 			{ID: "toggle_autoreload", Label: autoReloadLabel, Shortcut: "[a]"},
 			{ID: "toggle_syntax", Label: syntaxLabel, Shortcut: "[m]"},
 			{ID: "help", Label: "Open Help Manual", Shortcut: "[?]"},
-			{ID: "quit_app", Label: "Quit Application", Shortcut: "[Esc]"},
+			{ID: "quit_app", Label: "Quit Application", Shortcut: "[q / Esc]"},
 		}
 	}
 
@@ -628,6 +636,11 @@ func (m *AppModel) updateCommandMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		q := strings.ToLower(strings.TrimSpace(m.CommandQuery))
+		if q == "q" || q == "quit" {
+			m.ShowCommandMenu = false
+			return m.executeCommand("quit_app")
+		}
 		if m.CommandCursor >= 0 && m.CommandCursor < len(cmds) {
 			selected := cmds[m.CommandCursor]
 			m.ShowCommandMenu = false
@@ -757,7 +770,7 @@ func (m *AppModel) updateBrowser(key string) (tea.Model, tea.Cmd) {
 	// When sidebar is focused (or open as mobile full-screen overlay), Esc returns to the file list
 	if m.Browser.SidebarFocused || (m.Browser.IsNarrow && m.Browser.SidebarOpen) {
 		switch key {
-		case "esc", "q":
+		case "esc":
 			m.Browser.SidebarFocused = false
 			if m.Browser.IsNarrow {
 				m.Browser.SidebarOpen = false
@@ -867,7 +880,7 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 	// When sidebar is focused (including narrow mobile full-screen overlay mode):
 	if m.Reader.SidebarFocused || (m.Reader.IsNarrow && m.Reader.SidebarOpen) {
 		switch key {
-		case "esc", "q":
+		case "esc":
 			// Pop back from sidebar focus/overlay to the Reader view
 			m.Reader.SidebarFocused = false
 			if m.Reader.IsNarrow {
@@ -895,7 +908,7 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 	// When Selection Mode is active in the Reader:
 	if m.Reader.SelectionMode {
 		switch key {
-		case "esc", "q":
+		case "esc":
 			m.Reader.SelectionMode = false
 			m.Reader.StatusMsg = ""
 			return m, nil
@@ -939,7 +952,7 @@ func (m *AppModel) updateReader(key string) (tea.Model, tea.Cmd) {
 			m.Reader.StepSearchMatch(-1, bodyHeight)
 			return m, nil
 		}
-	case "esc", "q", "left":
+	case "esc", "left":
 		m.Reader.StatusMsg = ""
 		// If we navigated here via a Markdown link, pop back to the previous document in history
 		if m.Reader.PopHistory(m.RootDir, m.Width, m.Height) {
@@ -1036,7 +1049,7 @@ func (m *AppModel) updateTableViewer(key string) (tea.Model, tea.Cmd) {
 	// When the scrollable Cell Detail Popup is open over the Table Viewer:
 	if m.TableViewer.ShowCellPopup {
 		switch key {
-		case "esc", "q":
+		case "esc":
 			m.TableViewer.ShowCellPopup = false
 			m.TableViewer.CellPopupScroll = 0
 			return m, nil
@@ -1072,7 +1085,7 @@ func (m *AppModel) updateTableViewer(key string) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
-	case "esc", "q":
+	case "esc":
 		m.Mode = ModeReader
 		m.TableViewer = nil
 		return m, nil
@@ -1392,7 +1405,6 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
 	if len(overlaid) > 0 {
 		baseFooter := formatFooterHints(bgBar,
-			HintPair{Key: "Enter", Desc: "Open"},
 			HintPair{Key: ":", Desc: "Commands"},
 			HintPair{Key: "Esc", Desc: "Quit"},
 		)
@@ -1434,6 +1446,7 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 		{"   Toggle Header Sidebar", "[t] "},
 		{"   Switch Focus (Reader / Sidebar)", "[Tab] "},
 		{"   Commands Palette", "[:] "},
+		{"   Quit Application", "[q / :q] "},
 	}
 
 	var popupLines []string

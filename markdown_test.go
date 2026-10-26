@@ -101,7 +101,26 @@ func TestFileBrowserFilterAndNavigation(t *testing.T) {
 		t.Fatalf("NewBrowserState failed: %v", err)
 	}
 
-	// At top-level bound (tmp), ".." should NOT be shown: expect "sub", "readme.md", "script.py"
+	// Default mode is MD ONLY (FilterMD == true): at top-level bound (tmp), ".." should NOT be shown,
+	// and only folders and supported markdown files ("sub", "readme.md") should be displayed.
+	if !b.FilterMD {
+		t.Fatalf("expected FilterMD to default to true")
+	}
+	if len(b.Entries) != 2 {
+		t.Fatalf("expected 2 entries in default MD ONLY mode (sub, readme.md), got %d", len(b.Entries))
+	}
+	if !b.Entries[0].IsDir || b.Entries[0].Name != "sub" {
+		t.Errorf("expected first entry to be directory sub, got %+v", b.Entries[0])
+	}
+	if !b.Entries[1].Supported || b.Entries[1].Name != "readme.md" {
+		t.Errorf("expected second entry to be supported readme.md, got %+v", b.Entries[1])
+	}
+
+	// Toggle filter to ALL mode (FilterMD == false)
+	b.ToggleFilter()
+	if b.FilterMD {
+		t.Errorf("expected FilterMD to be false after toggle")
+	}
 	if len(b.Entries) != 3 {
 		t.Fatalf("expected 3 entries in ALL mode at top-level bound, got %d", len(b.Entries))
 	}
@@ -112,14 +131,14 @@ func TestFileBrowserFilterAndNavigation(t *testing.T) {
 		t.Errorf("expected script.py to be unsupported")
 	}
 
-	// Unsupported item can still be highlighted by cursor navigation
+	// Unsupported item can still be highlighted by cursor navigation in ALL mode
 	b.MoveCursor(2, 20)
 	sel, ok := b.Selected()
 	if !ok || sel.Name != "script.py" {
 		t.Errorf("expected cursor to highlight unsupported file script.py, got %+v", sel)
 	}
 
-	// Toggle filter to MD ONLY
+	// Toggle filter back to MD ONLY
 	b.ToggleFilter()
 	if !b.FilterMD {
 		t.Errorf("expected FilterMD to be true")
@@ -330,10 +349,13 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	}
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	// Check minimal footer in Reader view (without colons, using bright key + darker description)
+	// Check minimal footer in Reader view (without colons or Search hint, using bright key + darker description)
 	view := app.View()
 	if !strings.Contains(view, "Commands") || !strings.Contains(view, "Quit") {
 		t.Errorf("expected minimal footer with 'Commands' and 'Quit', got:\n%s", view)
+	}
+	if strings.Contains(view, "Search") {
+		t.Errorf("expected 'Search' hint not to appear in footer bar, got:\n%s", view)
 	}
 	if strings.Contains(view, "/:") || strings.Contains(view, "Esc:") {
 		t.Errorf("expected footer key hints to not contain ':', got:\n%s", view)
@@ -364,6 +386,40 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	}
 	if !app.ShowSyntax || !app.Reader.ShowSyntax {
 		t.Errorf("expected toggle_syntax command to enable ShowSyntax")
+	}
+
+	// Test "quit" / "q" command from Reader view
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !app.ShowQuitConfirm {
+		t.Fatalf("expected ':q' command in Reader mode to show Quit Confirmation popup")
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if app.ShowQuitConfirm {
+		t.Fatalf("expected 'n' to cancel Quit Confirmation popup")
+	}
+
+	// Test ":quit" command in File Browser mode and check ":" vs "/" trigger consistency
+	app.Mode = ModeBrowser
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if app.ShowCommandMenu {
+		t.Fatalf("expected '/' not to open Command Menu in File Browser (only ':' should open it)")
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	if !app.ShowCommandMenu {
+		t.Fatalf("expected ':' to open Command Menu in File Browser")
+	}
+	for _, r := range "quit" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !app.ShowQuitConfirm {
+		t.Fatalf("expected ':quit' command to show Quit Confirmation popup")
+	}
+	_, quitCmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if quitCmd == nil {
+		t.Fatalf("expected confirming Quit Confirmation popup to quit the application")
 	}
 }
 
