@@ -374,6 +374,11 @@ func TestCommandPalettePopupAndFooterHints(t *testing.T) {
 	if !app.ShowCommandMenu {
 		t.Fatalf("expected ':' to open Command Menu popup")
 	}
+	cmdViewLines := strings.Split(app.View(), "\n")
+	cmdBottomFooter := cmdViewLines[len(cmdViewLines)-1]
+	if !strings.Contains(cmdBottomFooter, "Close") || strings.Contains(cmdBottomFooter, "Quit") {
+		t.Errorf("expected bottom footer bar when ':' popup is open to show 'Esc Close' (not 'Quit'), got:\n%s", cmdBottomFooter)
+	}
 
 	// Filter commands by typing "syntax"
 	for _, r := range "syntax" {

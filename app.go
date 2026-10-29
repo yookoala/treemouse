@@ -1684,7 +1684,7 @@ func (m *AppModel) renderWithCommandMenu(baseLines []string) []string {
 	if len(overlaid) > 0 {
 		baseFooter := formatFooterHints(bgBar,
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Quit"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 		overlaid[len(overlaid)-1] = styleLine(baseFooter, m.Width, bgBar, fgMuted)
 	}
@@ -1742,7 +1742,15 @@ func (m *AppModel) renderWithHelpManual(baseLines []string) []string {
 	)
 	popupLines = append(popupLines, styleLine(helpFooter, popupW, bgBar, fgMuted))
 
-	return overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+	if len(overlaid) > 0 {
+		baseFooter := formatFooterHints(bgBar,
+			HintPair{Key: ":", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Close"},
+		)
+		overlaid[len(overlaid)-1] = styleLine(baseFooter, m.Width, bgBar, fgMuted)
+	}
+	return overlaid
 }
 
 func (m *AppModel) renderWithUnsupportedPopup(baseLines []string) []string {
@@ -1765,7 +1773,15 @@ func (m *AppModel) renderWithUnsupportedPopup(baseLines []string) []string {
 		), popupW, bgBar, fgMuted),
 	}
 
-	return overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+	overlaid := overlayPopup(baseLines, popupLines, m.Width, popupW, bgMain)
+	if len(overlaid) > 0 {
+		baseFooter := formatFooterHints(bgBar,
+			HintPair{Key: ":", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Close"},
+		)
+		overlaid[len(overlaid)-1] = styleLine(baseFooter, m.Width, bgBar, fgMuted)
+	}
+	return overlaid
 }
 
 func (m *AppModel) renderWithEditPopup(baseLines []string) []string {

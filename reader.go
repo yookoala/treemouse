@@ -1050,7 +1050,7 @@ func (r *ReaderState) RenderLines(width, height int) []string {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: "Enter", Desc: "Open"},
 			HintPair{Key: ":", Desc: "Commands"},
-			HintPair{Key: "Esc", Desc: "Exit Select"},
+			HintPair{Key: "Esc", Desc: "Close"},
 		)
 	} else {
 		footerText = formatFooterHints(bgBar,

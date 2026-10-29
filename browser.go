@@ -780,10 +780,15 @@ func (b *BrowserState) RenderLines(width, height int) []string {
 		}
 	}
 
-	// 3. Bottom Footer Bar (only essential features: Commands, Quit)
+	// 3. Bottom Footer Bar (only essential features: Commands, Close/Quit)
 	var footerText string
 	if b.StatusMsg != "" {
 		footerText = " " + fgWarn + b.StatusMsg
+	} else if b.SidebarFocused {
+		footerText = formatFooterHints(bgBar,
+			HintPair{Key: ":", Desc: "Commands"},
+			HintPair{Key: "Esc", Desc: "Close"},
+		)
 	} else {
 		footerText = formatFooterHints(bgBar,
 			HintPair{Key: ":", Desc: "Commands"},
