@@ -1,5 +1,7 @@
 # treemouse
 
+<img src="docs/assets/treemouse-logo.svg" alt="treemouse logo" width="200">
+
 A responsive terminal folder tree browser and Markdown reader built in Go using [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 ---
