@@ -30,12 +30,36 @@ Much like its avian namesake navigating the bark of forest trees, **treemouse** 
 ### Prerequisites
 - [Go](https://go.dev/) 1.21+
 
+### Install with go
+
+```bash
+go install github.com/yookoala/treemouse@latest
+```
+
 ### Build from source
+
 ```bash
 git clone https://github.com/yookoala/treemouse.git
 cd treemouse
 go build -o bin/treemouse .
 ```
+
+or, with GNU Make
+
+```bash
+git clone https://github.com/yookoala/treemouse.git
+cd treemouse
+make install
+```
+
+You may specify the installation prefix, for example:
+
+```bash
+export PREFIX=$HOME/opt
+make install
+``
+
+will be installed the `treemouse` binary to `$HOME/opt/bin`.
 
 ---
 
