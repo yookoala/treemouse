@@ -57,7 +57,7 @@ You may specify the installation prefix, for example:
 ```bash
 export PREFIX=$HOME/opt
 make install
-``
+```
 
 will be installed the `treemouse` binary to `$HOME/opt/bin`.
 
